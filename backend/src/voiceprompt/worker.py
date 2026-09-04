@@ -16,10 +16,12 @@ async def run() -> None:
     repository = create_repository(settings)
     foundry = FoundryClient(settings, credential)
     processor = Processor(repository, settings, foundry, foundry, create_notifier(settings))
-    queue = QueueServiceClient(
+    queue_service = QueueServiceClient(
         f"https://{settings.storage_account_name}.queue.{settings.storage_endpoint_suffix}",
         credential=credential,
-    ).get_queue_client(settings.work_queue)
+    )
+    queue = queue_service.get_queue_client(settings.work_queue)
+    poison = queue_service.get_queue_client(settings.poison_queue)
     while True:
         found = False
         async for message in queue.receive_messages(messages_per_page=8, visibility_timeout=300):
@@ -30,10 +32,6 @@ async def run() -> None:
                 await queue.delete_message(message.id, message.pop_receipt)
             except Exception:
                 if message.dequeue_count >= 5:
-                    poison = QueueServiceClient(
-                        f"https://{settings.storage_account_name}.queue.{settings.storage_endpoint_suffix}",
-                        credential=credential,
-                    ).get_queue_client(settings.poison_queue)
                     await poison.send_message(message.content)
                     await queue.delete_message(message.id, message.pop_receipt)
         if not found:
