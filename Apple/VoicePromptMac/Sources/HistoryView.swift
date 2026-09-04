@@ -29,11 +29,8 @@ struct HistoryView: View {
                         if enabled { try? SMAppService.mainApp.register() }
                         else { try? SMAppService.mainApp.unregister() }
                     }
-                Button("Sign in with Google") {
-                    NSWorkspace.shared.open(URL(string: "https://github.com/michalmar/voice-memo/blob/main/docs/configuration.md")!)
-                }
+                Button("Google Sign-In Requires Client Registration") {}
                 .disabled(true)
-                Button("Sign Out", role: .destructive) {}
             }
             .formStyle(.grouped)
             .padding()
