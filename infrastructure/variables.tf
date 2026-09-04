@@ -20,17 +20,27 @@ variable "container_image" {
   description = "Immutable backend image reference."
 }
 
-variable "allowed_google_subjects" {
+variable "entra_tenant_id" {
+  type        = string
+  description = "Microsoft Entra tenant ID."
+}
+
+variable "entra_audience" {
+  type        = string
+  description = "API application client ID expected in Entra v2 access tokens."
+}
+
+variable "entra_required_scope" {
+  type        = string
+  default     = "VoicePrompt.Access"
+  description = "Delegated API scope required in access tokens."
+}
+
+variable "allowed_entra_object_ids" {
   type        = list(string)
   sensitive   = true
   default     = []
-  description = "Allowed stable Google subject identifiers."
-}
-
-variable "google_audiences" {
-  type        = list(string)
-  default     = []
-  description = "Native Google OIDC client IDs."
+  description = "Allowed stable Entra user object IDs."
 }
 
 variable "foundry_endpoint" {

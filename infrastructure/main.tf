@@ -215,8 +215,10 @@ locals {
   app_environment = [
     { name = "VOICEPROMPT_ENVIRONMENT", value = "production" },
     { name = "VOICEPROMPT_STORAGE_ACCOUNT_NAME", value = azurerm_storage_account.main.name },
-    { name = "VOICEPROMPT_GOOGLE_AUDIENCES", value = join(",", var.google_audiences) },
-    { name = "VOICEPROMPT_ALLOWED_GOOGLE_SUBJECTS", value = join(",", var.allowed_google_subjects) },
+    { name = "VOICEPROMPT_ENTRA_TENANT_ID", value = var.entra_tenant_id },
+    { name = "VOICEPROMPT_ENTRA_AUDIENCE", value = var.entra_audience },
+    { name = "VOICEPROMPT_ENTRA_REQUIRED_SCOPE", value = var.entra_required_scope },
+    { name = "VOICEPROMPT_ALLOWED_ENTRA_OBJECT_IDS", value = join(",", var.allowed_entra_object_ids) },
     { name = "VOICEPROMPT_FOUNDRY_ENDPOINT", value = var.foundry_endpoint },
     { name = "VOICEPROMPT_SPEECH_DEPLOYMENT", value = var.speech_deployment },
     { name = "VOICEPROMPT_CLEANUP_DEPLOYMENT", value = var.cleanup_deployment },

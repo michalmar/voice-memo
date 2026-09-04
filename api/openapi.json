@@ -9,38 +9,15 @@
       "post": {
         "summary": "Create Session",
         "operationId": "create_session_v1_sessions_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SessionCreate"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "201": {
@@ -63,7 +40,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/v1/sessions/{session_id}/chunks/{sequence}": {
@@ -125,22 +107,6 @@
               "exclusiveMinimum": 0,
               "title": "X-Duration-Ms"
             }
-          },
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
-            }
           }
         ],
         "responses": {
@@ -185,22 +151,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Session Id"
-            }
-          },
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
             }
           }
         ],
@@ -257,22 +207,6 @@
               "format": "uuid",
               "title": "Session Id"
             }
-          },
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
-            }
           }
         ],
         "responses": {
@@ -303,29 +237,6 @@
       "get": {
         "summary": "List Transcripts",
         "operationId": "list_transcripts_v1_transcripts_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -336,18 +247,13 @@
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/v1/transcripts/{transcript_id}": {
@@ -368,22 +274,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Transcript Id"
-            }
-          },
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
             }
           }
         ],
@@ -428,22 +318,6 @@
               "format": "uuid",
               "title": "Transcript Id"
             }
-          },
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
-            }
           }
         ],
         "responses": {
@@ -467,29 +341,6 @@
       "post": {
         "summary": "Event Token",
         "operationId": "event_token_v1_events_token_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "X-OIDC-Nonce",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Oidc-Nonce"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -500,18 +351,13 @@
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     }
   },

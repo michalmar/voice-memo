@@ -14,7 +14,7 @@ Not executable in this environment:
   because the runner is Linux and has no Xcode.
 - Azure discovery, plan/apply, smoke tests, or model evaluation because Azure CLI
   has no authenticated account.
-- Google sign-in because native client registrations do not exist.
+- Entra sign-in because the API and native client app registrations do not exist.
 - Signing/notarization because Apple credentials are unavailable.
 - Lock-screen/background recording and a 20-minute physical-device recording,
   which must be verified on a real registered iPhone and must not be inferred from

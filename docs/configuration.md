@@ -1,22 +1,38 @@
 # Configuration and registration
 
-## Google OAuth
+## Microsoft Entra ID
 
-Configure the Google consent screen, then add the account under **Test users** if
-the app remains in testing.
+Use one single-tenant API registration and separate public-client registrations for
+iOS and macOS. No client secret is used by either native application.
 
-1. Create an **iOS** OAuth client with bundle ID
-   `com.michalmar.voiceprompt.ios`.
-2. Create a **Desktop app** OAuth client named `VoicePrompt macOS`.
-3. Put both resulting client IDs in Terraform `google_audiences`.
-4. Configure each Apple target with its client ID and callback values after adding
-   the production PKCE credential provider. Do not add a client secret to either app.
-5. Obtain the stable Google `sub` claim from one validated sign-in and set it in
-   `allowed_google_subjects`; email allow-listing is supported only as a bootstrap.
+1. In **Microsoft Entra admin center > App registrations**, register
+   `VoicePrompt API` for accounts in this organizational directory only.
+2. Under **Expose an API**, accept the Application ID URI
+   `api://<api-application-client-id>` and add delegated scope
+   `VoicePrompt.Access`. In the app manifest, set `requestedAccessTokenVersion` to
+   `2`. Admin consent is recommended for this private application.
+3. Register `VoicePrompt iOS` as a public client. Add the mobile/desktop redirect
+   URI `msauth.com.michalmar.voiceprompt.ios://auth`, enable public client flows,
+   and grant delegated `VoicePrompt.Access` permission to `VoicePrompt API`.
+4. Register `VoicePrompt macOS` as a public client. Add redirect URI
+   `msauth.com.michalmar.voiceprompt.macos://auth`, enable public client flows,
+   and grant the same delegated API permission.
+5. Record the tenant ID, API application client ID, iOS client ID, macOS client ID,
+   and the intended user's Entra **Object ID**. Grant tenant admin consent.
+6. Configure Terraform:
+   - `entra_tenant_id = "<tenant-id>"`
+   - `entra_audience = "<api-application-client-id>"`
+   - `entra_required_scope = "VoicePrompt.Access"`
+   - `allowed_entra_object_ids = ["<user-object-id>"]`
+7. Copy `Apple/Configuration.xcconfig.example` to an ignored local configuration,
+   fill `ENTRA_TENANT_ID`,
+   `ENTRA_API_SCOPE = "api://<api-application-client-id>/VoicePrompt.Access"`,
+   `ENTRA_IOS_CLIENT_ID`, and `ENTRA_MAC_CLIENT_ID`, then apply those build settings
+   to both generated Xcode targets.
 
-The checked-in Apple targets intentionally use an authentication abstraction and no
-mock credential in release behavior. Client IDs are not secrets, but they are left
-unconfigured until the registrations exist.
+The clients use Authorization Code with PKCE in `ASWebAuthenticationSession`.
+Refresh tokens are device-only Keychain items. The backend partitions ownership by
+the validated `<tenant-id>:<object-id>` pair and requires the delegated scope.
 
 ## Azure and Foundry
 

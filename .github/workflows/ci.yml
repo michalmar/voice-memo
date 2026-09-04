@@ -29,6 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
+      - run: cp Configuration.xcconfig.example Configuration.xcconfig
+        working-directory: Apple
       - run: xcodegen generate
         working-directory: Apple
       - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptIOS -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO build

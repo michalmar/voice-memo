@@ -20,6 +20,12 @@ targets:
         INFOPLIST_FILE: VoicePromptIOS/Info.plist
         CODE_SIGN_ENTITLEMENTS: VoicePromptIOS/VoicePromptIOS.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENTRA_TENANT_ID: ""
+        ENTRA_IOS_CLIENT_ID: ""
+        ENTRA_API_SCOPE: ""
+    configFiles:
+      Debug: Configuration.xcconfig
+      Release: Configuration.xcconfig
     dependencies:
       - package: VoicePromptKit
     scheme:
@@ -36,5 +42,11 @@ targets:
         INFOPLIST_FILE: VoicePromptMac/Info.plist
         CODE_SIGN_ENTITLEMENTS: VoicePromptMac/VoicePromptMac.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENTRA_TENANT_ID: ""
+        ENTRA_MAC_CLIENT_ID: ""
+        ENTRA_API_SCOPE: ""
+    configFiles:
+      Debug: Configuration.xcconfig
+      Release: Configuration.xcconfig
     dependencies:
       - package: VoicePromptKit

@@ -10,7 +10,7 @@ The queue deletes a local file only after the API acknowledges its idempotent PU
 
 Completion uses Azure Web PubSub serverless delivery. The API issues ten-minute,
 user-scoped WebSocket URLs; the worker sends only the transcript identifier to the
-validated Google subject. The Mac performs low-frequency reconciliation on launch,
+validated Entra tenant/object identity. The Mac performs low-frequency reconciliation on launch,
 wake, and reconnect. It fetches every missed item but automatically copies only
 the newest unseen completion.
 
@@ -30,10 +30,11 @@ net for abandoned audio.
 
 ## Identity and network
 
-Clients use Google Authorization Code with PKCE through the system browser. The
-backend accepts Google ID tokens only after issuer, audience, signature, subject,
-expiry, nonce, and allow-list validation. Resource ownership is checked on every
-operation.
+Clients use Microsoft Entra ID Authorization Code with PKCE through the system
+browser. They request a delegated API scope and keep refresh credentials in
+Keychain. The backend accepts Entra access tokens only after signature, exact
+tenant, issuer, audience, expiry, object ID, delegated scope, and allow-list
+validation. Resource ownership is checked on every operation.
 
 Azure workloads use a user-assigned Managed Identity. Storage shared-key access and
 public networking are disabled. Blob, Queue, and Table use private endpoints and

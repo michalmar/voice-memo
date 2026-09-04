@@ -1,23 +1,28 @@
 import SwiftUI
 import VoicePromptKit
 
-private struct MacCredentials: CredentialProvider {
-    func identityToken() async throws -> (token: String, nonce: String) {
-        guard let subject = UserDefaults.standard.string(forKey: "developmentSubject"), !subject.isEmpty else {
-            throw CocoaError(.userAuthenticationRequired)
-        }
-        return ("dev:" + subject, "development")
-    }
-}
-
 @main
 struct VoicePromptMacApp: App {
     @StateObject private var synchronizer: CompletionSynchronizer
     private let events: EventClient
+    private let credentials: EntraCredentialProvider
+    private let authorization: EntraAuthorizationCoordinator
 
     init() {
         let baseURL = URL(string: UserDefaults.standard.string(forKey: "backendURL") ?? "https://voiceprompt.invalid/")!
-        let client = APIClient(baseURL: baseURL, credentials: MacCredentials())
+        let configuration = EntraConfiguration(
+            tenantID: Bundle.main.object(forInfoDictionaryKey: "ENTRA_TENANT_ID") as? String ?? "",
+            clientID: Bundle.main.object(forInfoDictionaryKey: "ENTRA_CLIENT_ID") as? String ?? "",
+            redirectURI: "msauth.com.michalmar.voiceprompt.macos://auth",
+            apiScope: Bundle.main.object(forInfoDictionaryKey: "ENTRA_API_SCOPE") as? String ?? ""
+        )
+        let credentials = EntraCredentialProvider(
+            configuration: configuration,
+            store: KeychainCredentialStore(service: "com.michalmar.voiceprompt.macos")
+        )
+        self.credentials = credentials
+        authorization = EntraAuthorizationCoordinator(configuration: configuration)
+        let client = APIClient(baseURL: baseURL, credentials: credentials)
         let sync = CompletionSynchronizer(client: client, clipboard: SystemClipboard(), notifications: SystemNotifications())
         _synchronizer = StateObject(wrappedValue: sync)
         events = EventClient(api: client)
@@ -38,7 +43,11 @@ struct VoicePromptMacApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            HistoryView(synchronizer: synchronizer)
+            HistoryView(
+                synchronizer: synchronizer,
+                credentials: credentials,
+                authorization: authorization
+            )
         }
     }
 }

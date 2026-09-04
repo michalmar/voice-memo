@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var model: RecordingViewModel
+    let signIn: () -> Void
     @GestureState private var pressing = false
 
     var body: some View {
@@ -19,6 +20,8 @@ struct ContentView: View {
             Text(model.backendReady ? "Cloud ready" : "Cloud warming up — recording is available")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            Button("Sign in with Microsoft", action: signIn)
+                .buttonStyle(.borderless)
             Button {
                 Task { await model.toggle() }
             } label: {
@@ -50,4 +53,3 @@ struct ContentView: View {
         .task { await model.warmBackend() }
     }
 }
-

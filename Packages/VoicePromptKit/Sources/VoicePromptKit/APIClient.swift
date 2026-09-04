@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 
 public protocol CredentialProvider: Sendable {
-    func identityToken() async throws -> (token: String, nonce: String)
+    func accessToken() async throws -> String
 }
 
 public actor APIClient {
@@ -84,13 +84,12 @@ public actor APIClient {
         body: Data? = nil,
         headers: [String: String] = [:]
     ) async throws -> T {
-        let credential = try await credentials.identityToken()
+        let token = try await credentials.accessToken()
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
         request.httpBody = body
         request.timeoutInterval = 60
-        request.setValue("Bearer " + credential.token, forHTTPHeaderField: "Authorization")
-        request.setValue(credential.nonce, forHTTPHeaderField: "X-OIDC-Nonce")
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Correlation-ID")
         if body != nil && headers["Content-Type"] == nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

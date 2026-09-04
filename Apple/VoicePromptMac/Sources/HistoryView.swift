@@ -3,6 +3,8 @@ import SwiftUI
 
 struct HistoryView: View {
     @ObservedObject var synchronizer: CompletionSynchronizer
+    let credentials: EntraCredentialProvider
+    let authorization: EntraAuthorizationCoordinator
     @AppStorage("backendURL") private var backendURL = "https://voiceprompt.invalid/"
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
@@ -29,8 +31,15 @@ struct HistoryView: View {
                         if enabled { try? SMAppService.mainApp.register() }
                         else { try? SMAppService.mainApp.unregister() }
                     }
-                Button("Google Sign-In Requires Client Registration") {}
-                .disabled(true)
+                Button("Sign in with Microsoft") {
+                    Task {
+                        try? await authorization.signIn(using: credentials)
+                        await synchronizer.reconcile()
+                    }
+                }
+                Button("Sign Out", role: .destructive) {
+                    Task { await credentials.signOut() }
+                }
             }
             .formStyle(.grouped)
             .padding()

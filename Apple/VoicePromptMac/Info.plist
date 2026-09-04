@@ -8,7 +8,13 @@
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
+<key>ENTRA_TENANT_ID</key><string>$(ENTRA_TENANT_ID)</string>
+<key>ENTRA_CLIENT_ID</key><string>$(ENTRA_MAC_CLIENT_ID)</string>
+<key>ENTRA_API_SCOPE</key><string>$(ENTRA_API_SCOPE)</string>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>Microsoft Entra ID</string>
+<key>CFBundleURLSchemes</key><array><string>msauth.com.michalmar.voiceprompt.macos</string></array>
+</dict></array>
 <key>LSUIElement</key><true/>
 <key>NSHumanReadableCopyright</key><string>VoicePrompt</string>
 </dict></plist>
-

@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 Apple/*.xcodeproj/
 Apple/build/
+Apple/Configuration.xcconfig
 Packages/VoicePromptKit/.build/
 infrastructure/.terraform/
 infrastructure/*.tfstate*

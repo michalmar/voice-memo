@@ -16,10 +16,10 @@ class Settings(BaseSettings):
     chunks_container: str = "audio"
     work_queue: str = "voice-work"
     poison_queue: str = "voice-work-poison"
-    google_audiences: list[str] = Field(default_factory=list)
-    allowed_google_subjects: set[str] = Field(default_factory=set)
-    allowed_google_emails: set[str] = Field(default_factory=set)
-    require_oidc_nonce: bool = True
+    entra_tenant_id: str = ""
+    entra_audience: str = ""
+    entra_required_scope: str = "VoicePrompt.Access"
+    allowed_entra_object_ids: set[str] = Field(default_factory=set)
     allow_development_auth: bool = False
     max_chunk_bytes: int = 8 * 1024 * 1024
     max_segments: int = 120
@@ -39,12 +39,7 @@ class Settings(BaseSettings):
         ]
     )
 
-    @field_validator("google_audiences", mode="before")
-    @classmethod
-    def split_csv(cls, value: object) -> object:
-        return value.split(",") if isinstance(value, str) else value
-
-    @field_validator("allowed_google_subjects", "allowed_google_emails", mode="before")
+    @field_validator("allowed_entra_object_ids", mode="before")
     @classmethod
     def split_set(cls, value: object) -> object:
         return {part.strip() for part in value.split(",") if part.strip()} if isinstance(value, str) else value
