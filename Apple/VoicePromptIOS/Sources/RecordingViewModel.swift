@@ -36,9 +36,9 @@ final class RecordingViewModel: ObservableObject {
         guard state != .recording else { return }
         let id = UUID()
         sessionID = id
+        state = .recording
         do {
             try await recorder.start(sessionID: id)
-            state = .recording
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             Task {
                 _ = try? await client.createSession(CreateSessionRequest(id: id))
@@ -69,4 +69,3 @@ final class RecordingViewModel: ObservableObject {
         state == .recording ? await stop() : await start()
     }
 }
-

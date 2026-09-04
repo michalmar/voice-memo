@@ -30,8 +30,9 @@ struct HistoryView: View {
                         else { try? SMAppService.mainApp.unregister() }
                     }
                 Button("Sign in with Google") {
-                    NSWorkspace.shared.open(URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!)
+                    NSWorkspace.shared.open(URL(string: "https://github.com/michalmar/voice-memo/blob/main/docs/configuration.md")!)
                 }
+                .disabled(true)
                 Button("Sign Out", role: .destructive) {}
             }
             .formStyle(.grouped)
@@ -41,4 +42,3 @@ struct HistoryView: View {
         .task { await synchronizer.reconcile() }
     }
 }
-

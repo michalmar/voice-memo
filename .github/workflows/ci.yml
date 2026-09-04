@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e 'backend[test]'
+      - run: pytest backend/tests
+      - run: python scripts/export-openapi.py
+      - run: git diff --exit-code api/openapi.json
+  swift-package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+        working-directory: Packages/VoicePromptKit
+  apple-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+        working-directory: Apple
+      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptIOS -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO build
+        working-directory: Apple
+      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptMac CODE_SIGNING_ALLOWED=NO build
+        working-directory: Apple

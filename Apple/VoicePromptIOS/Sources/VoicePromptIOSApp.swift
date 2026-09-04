@@ -3,7 +3,10 @@ import VoicePromptKit
 
 private struct DevelopmentCredentials: CredentialProvider {
     func identityToken() async throws -> (token: String, nonce: String) {
-        throw CocoaError(.userAuthenticationRequired)
+        guard let subject = UserDefaults.standard.string(forKey: "developmentSubject"), !subject.isEmpty else {
+            throw CocoaError(.userAuthenticationRequired)
+        }
+        return ("dev:" + subject, "development")
     }
 }
 

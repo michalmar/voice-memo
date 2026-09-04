@@ -3,7 +3,10 @@ import VoicePromptKit
 
 private struct MacCredentials: CredentialProvider {
     func identityToken() async throws -> (token: String, nonce: String) {
-        throw CocoaError(.userAuthenticationRequired)
+        guard let subject = UserDefaults.standard.string(forKey: "developmentSubject"), !subject.isEmpty else {
+            throw CocoaError(.userAuthenticationRequired)
+        }
+        return ("dev:" + subject, "development")
     }
 }
 
@@ -25,7 +28,7 @@ struct VoicePromptMacApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("VoicePrompt", systemImage: "mic.fill") {
+        MenuBarExtra("VoicePrompt", image: "MenuBarIcon") {
             Text(synchronizer.connected ? "Connected" : "Offline")
             Button("Sync Now") { Task { await synchronizer.reconcile() } }
             SettingsLink { Text("History & Settings") }
