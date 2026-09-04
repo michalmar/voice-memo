@@ -30,6 +30,9 @@ class AzureRepository:
         self.transcripts = TableServiceClient(
             f"https://{name}.table.{suffix}", credential=credential
         ).get_table_client(settings.transcripts_table)
+        self.transcript_expiry = TableServiceClient(
+            f"https://{name}.table.{suffix}", credential=credential
+        ).get_table_client(settings.transcript_expiry_table)
         self.blobs = BlobServiceClient(
             f"https://{name}.blob.{suffix}", credential=credential
         ).get_container_client(settings.chunks_container)
@@ -75,14 +78,37 @@ class AzureRepository:
 
     async def put_chunk(self, owner: str, session_id: UUID, sequence: int, data: bytes, checksum: str, metadata: dict[str, str]) -> bool:
         blob = self.blobs.get_blob_client(self._blob_name(owner, session_id, sequence))
+        created = True
         try:
             await blob.upload_blob(data, overwrite=False, metadata={**metadata, "sha256": checksum})
-            return True
         except ResourceExistsError:
             properties = await blob.get_blob_properties()
             if properties.metadata.get("sha256") != checksum:
                 raise ValueError("checksum_conflict")
-            return False
+            created = False
+        await self.sessions.upsert_entity(
+            {
+                "PartitionKey": _partition(owner),
+                "RowKey": f"chunk:{session_id}:{sequence:06d}",
+                "owner": owner,
+                "sequence": sequence,
+            },
+            mode="replace",
+        )
+        return created
+
+    async def list_accepted_segments(self, owner: str, session_id: UUID) -> list[int]:
+        values: list[int] = []
+        async for entity in self.sessions.query_entities(
+            "PartitionKey eq @partition and RowKey ge @start and RowKey lt @end",
+            parameters={
+                "partition": _partition(owner),
+                "start": f"chunk:{session_id}:",
+                "end": f"chunk:{session_id};",
+            },
+        ):
+            values.append(int(entity["sequence"]))
+        return sorted(values)
 
     async def get_chunk(self, owner: str, session_id: UUID, sequence: int) -> bytes | None:
         try:
@@ -146,6 +172,15 @@ class AzureRepository:
             },
             mode="replace",
         )
+        await self.transcript_expiry.upsert_entity(
+            {
+                "PartitionKey": "expiry",
+                "RowKey": f"{transcript.expires_at.isoformat()}:{transcript.id}",
+                "owner_partition": _partition(transcript.owner),
+                "transcript_id": str(transcript.id),
+            },
+            mode="replace",
+        )
 
     async def get_transcript(self, owner: str, transcript_id: UUID) -> TranscriptRecord | None:
         try:
@@ -174,13 +209,18 @@ class AzureRepository:
 
     async def cleanup(self, now: datetime) -> int:
         count = 0
-        async for entity in self.transcripts.query_entities(
-            "expires_at le @now", parameters={"now": now}
+        async for entity in self.transcript_expiry.query_entities(
+            "PartitionKey eq @partition and RowKey le @cutoff",
+            parameters={"partition": "expiry", "cutoff": f"{now.isoformat()}:\uffff"},
         ):
             try:
-                await self.transcripts.delete_entity(entity["PartitionKey"], entity["RowKey"])
+                await self.transcripts.delete_entity(entity["owner_partition"], entity["transcript_id"])
                 count += 1
-            except (ResourceNotFoundError, HttpResponseError):
-                continue
+            except ResourceNotFoundError:
+                pass
+            finally:
+                try:
+                    await self.transcript_expiry.delete_entity(entity["PartitionKey"], entity["RowKey"])
+                except (ResourceNotFoundError, HttpResponseError):
+                    pass
         return count
-

@@ -52,3 +52,24 @@ async def test_local_end_to_end_deletes_intermediate_data():
     assert repository.chunks == {}
     assert repository.segment_texts == {}
 
+
+@pytest.mark.asyncio
+async def test_finalization_fails_after_bounded_waits():
+    settings = Settings(environment="test", allow_development_auth=True)
+    repository = MemoryRepository()
+    service = SessionService(repository, settings)
+    session_id = uuid4()
+    await service.create("owner", SessionCreate(id=session_id, audio_format="m4a"))
+    session = await service.get("owner", session_id)
+    session.expected_segment_count = 1
+    session.status = SessionStatus.TRANSCRIBING
+    await repository.save_session(session)
+
+    processor = Processor(repository, settings, FakeModels(), FakeModels())
+    await processor.process({
+        "kind": "finalize", "owner": "owner", "session_id": str(session_id), "wait_count": 20
+    })
+    failed = await service.get("owner", session_id)
+    assert failed.status == SessionStatus.FAILED
+    assert failed.error_code == "segment_transcription_missing"
+    assert repository.queue.empty()

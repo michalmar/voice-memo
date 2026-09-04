@@ -71,9 +71,7 @@ class SessionService:
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail="Segment sequence has different content") from exc
-        if sequence not in session.accepted_segments:
-            session.accepted_segments.append(sequence)
-            session.accepted_segments.sort()
+        session.accepted_segments = await self.repository.list_accepted_segments(owner, session_id)
         session.status = SessionStatus.UPLOADING
         session.error_code = None
         await self.repository.save_session(session)
@@ -85,6 +83,7 @@ class SessionService:
 
     async def complete(self, owner: str, session_id: UUID, request: SessionComplete) -> SessionRecord:
         session = await self.get(owner, session_id)
+        session.accepted_segments = await self.repository.list_accepted_segments(owner, session_id)
         expected = list(range(request.expected_segment_count))
         if session.accepted_segments != expected:
             missing = sorted(set(expected) - set(session.accepted_segments))

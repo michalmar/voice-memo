@@ -18,6 +18,11 @@ def context():
     return repository, SessionService(repository, settings)
 
 
+def test_development_auth_cannot_be_enabled_in_production():
+    with pytest.raises(ValueError):
+        Settings(environment="production", allow_development_auth=True)
+
+
 @pytest.mark.asyncio
 async def test_session_and_chunk_are_idempotent(context):
     repository, service = context
@@ -91,4 +96,3 @@ async def test_retention_cleanup_is_idempotent(context):
     await repository.save_transcript(record)
     assert await repository.cleanup(now) == 1
     assert await repository.cleanup(now) == 0
-

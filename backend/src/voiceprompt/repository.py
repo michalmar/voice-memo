@@ -12,6 +12,7 @@ class Repository(Protocol):
     async def get_session(self, owner: str, session_id: UUID) -> SessionRecord | None: ...
     async def save_session(self, session: SessionRecord) -> None: ...
     async def put_chunk(self, owner: str, session_id: UUID, sequence: int, data: bytes, checksum: str, metadata: dict[str, str]) -> bool: ...
+    async def list_accepted_segments(self, owner: str, session_id: UUID) -> list[int]: ...
     async def get_chunk(self, owner: str, session_id: UUID, sequence: int) -> bytes | None: ...
     async def delete_chunk(self, owner: str, session_id: UUID, sequence: int) -> None: ...
     async def save_segment_text(self, owner: str, session_id: UUID, sequence: int, text: str) -> None: ...
@@ -30,6 +31,7 @@ class MemoryRepository:
         self.sessions: dict[tuple[str, UUID], SessionRecord] = {}
         self.chunks: dict[tuple[str, UUID, int], tuple[bytes, str]] = {}
         self.segment_texts: dict[tuple[str, UUID, int], str] = {}
+        self.accepted_segments: set[tuple[str, UUID, int]] = set()
         self.transcripts: dict[tuple[str, UUID], TranscriptRecord] = {}
         self.queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self._lock = asyncio.Lock()
@@ -63,7 +65,11 @@ class MemoryRepository:
                     raise ValueError("checksum_conflict")
                 return False
             self.chunks[key] = (data, checksum)
+            self.accepted_segments.add(key)
             return True
+
+    async def list_accepted_segments(self, owner: str, session_id: UUID) -> list[int]:
+        return sorted(key[2] for key in self.accepted_segments if key[:2] == (owner, session_id))
 
     async def get_chunk(self, owner: str, session_id: UUID, sequence: int) -> bytes | None:
         value = self.chunks.get((owner, session_id, sequence))
@@ -111,4 +117,3 @@ class MemoryRepository:
     async def messages(self) -> AsyncIterator[dict[str, object]]:
         while True:
             yield await self.queue.get()
-

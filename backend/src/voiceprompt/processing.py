@@ -117,8 +117,14 @@ class Processor:
                 return
             segments = await self.repository.get_segment_texts(owner, session_id, session.expected_segment_count)
             if any(segment is None for segment in segments):
+                wait_count = int(message.get("wait_count", 0))
+                if wait_count >= 20:
+                    session.status = SessionStatus.FAILED
+                    session.error_code = "segment_transcription_missing"
+                    await self.repository.save_session(session)
+                    return
                 await asyncio.sleep(1)
-                await self.repository.enqueue(message)
+                await self.repository.enqueue({**message, "wait_count": wait_count + 1})
                 return
             session.status = SessionStatus.REFINING
             await self.repository.save_session(session)

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     storage_endpoint_suffix: str = "core.windows.net"
     sessions_table: str = "sessions"
     transcripts_table: str = "transcripts"
+    transcript_expiry_table: str = "transcriptexpiry"
     chunks_container: str = "audio"
     work_queue: str = "voice-work"
     poison_queue: str = "voice-work-poison"
@@ -52,8 +53,13 @@ class Settings(BaseSettings):
     def use_memory_store(self) -> bool:
         return self.environment in {"test", "development"} and not self.storage_account_name
 
+    @model_validator(mode="after")
+    def development_auth_is_never_production(self) -> "Settings":
+        if self.environment == "production" and self.allow_development_auth:
+            raise ValueError("Development authentication cannot be enabled in production")
+        return self
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

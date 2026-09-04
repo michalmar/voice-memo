@@ -130,6 +130,11 @@ resource "azurerm_storage_table" "transcripts" {
   storage_account_name = azurerm_storage_account.main.name
 }
 
+resource "azurerm_storage_table" "transcript_expiry" {
+  name                 = "transcriptexpiry"
+  storage_account_name = azurerm_storage_account.main.name
+}
+
 resource "azurerm_storage_management_policy" "cleanup" {
   storage_account_id = azurerm_storage_account.main.id
   rule {
@@ -289,14 +294,11 @@ resource "azurerm_container_app_job" "worker" {
       rules {
         name             = "queue"
         custom_rule_type = "azure-queue"
+        identity_id      = azurerm_user_assigned_identity.workload.id
         metadata = {
           accountName = azurerm_storage_account.main.name
           queueName   = azurerm_storage_queue.work.name
           queueLength = "1"
-        }
-        authentication {
-          secret_name       = null
-          trigger_parameter = "connection"
         }
       }
     }
