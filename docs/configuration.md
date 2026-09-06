@@ -158,6 +158,9 @@ Restart the macOS app after editing its Backend URL in History & Settings.
 
 ## Apple signing
 
+The shared Swift package requires Swift 6.3 or newer. CI uses Xcode 26.5 on macOS
+26 with an explicitly selected toolchain rather than the runner's default Xcode.
+
 ### Local iOS Simulator testing
 
 Select the **VoicePromptIOS** scheme and a named **iOS Simulator** destination
