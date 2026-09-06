@@ -17,7 +17,7 @@ actor RecordingEngine: AudioRecording {
             switch self {
             case .microphoneDenied: return "Microphone access is denied. Enable it for VoicePrompt in Settings."
             case .notRecording: return "There is no active recording to save."
-            case .couldNotRecord: return "The microphone could not start recording. Check the simulator's audio input."
+            case .couldNotRecord: return "The microphone could not start recording. Check the device's audio input and try again."
             }
         }
     }
@@ -44,7 +44,7 @@ actor RecordingEngine: AudioRecording {
             attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
         )
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .spokenAudio, options: [.allowBluetoothHFP])
+        try Self.configureAudioSession(session)
         try session.setActive(true)
         self.sessionID = sessionID
         sequence = 0
@@ -70,6 +70,11 @@ actor RecordingEngine: AudioRecording {
                 await self?.segmentFailed(error)
             }
         }
+    }
+
+    static func configureAudioSession(_ session: AVAudioSession) throws {
+        // spokenAudio is a playback mode; record-only sessions need a capture-compatible mode.
+        try session.setCategory(.record, mode: .default, options: [.allowBluetoothHFP])
     }
 
     func stop() async throws -> [ChunkMetadata] {

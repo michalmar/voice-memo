@@ -39,6 +39,12 @@ target settings override the values from the configuration file.
 The clients use Authorization Code with PKCE in `ASWebAuthenticationSession`.
 Refresh tokens are device-only Keychain items. The backend partitions ownership by
 the validated `<tenant-id>:<object-id>` pair and requires the delegated scope.
+When admitting another account, append its Object ID to `allowed_entra_object_ids`
+without removing existing users, then deploy the updated allowlist. Successful
+Microsoft sign-in alone does not grant API access. App users do not need Azure
+Contributor, storage access, or directory administrator roles. Sign in with the
+**same Microsoft account on iPhone and Mac** to synchronize that account's records;
+allowing a second account does not share or merge either account's history.
 
 ## Azure and Foundry
 
@@ -330,6 +336,13 @@ and reinstall from Xcode to renew them; there is no need to delete the app first
 Once installed and trusted, the app can run without the cable until its profile
 expires. Sign-in, upload, and transcription still require the separate Entra and
 backend configuration; successful signing alone does not configure those services.
+
+Microphone capture uses the `.record` audio-session category with `.default` mode
+and Bluetooth HFP input support. The playback-oriented `.spokenAudio` mode is not
+appropriate for recording: an incompatible category/mode combination can fail with
+`OSStatus -50` on a physical iPhone even when the simulator works. Rebuild and
+reinstall the corrected app over the existing copy; changing Microsoft permissions
+does not fix an audio-session configuration error.
 
 XcodeGen recreates the project, so a Team selected only in Xcode may be lost after
 `make apple-project`. To persist that choice locally, add
