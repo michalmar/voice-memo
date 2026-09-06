@@ -63,15 +63,17 @@ class FoundryClient:
             f"{self.settings.foundry_endpoint.rstrip('/')}/openai/deployments/"
             f"{self.settings.cleanup_deployment}/chat/completions"
         )
+        payload: dict[str, object] = {
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": transcript}],
+        }
+        if self.settings.cleanup_temperature is not None:
+            payload["temperature"] = self.settings.cleanup_temperature
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(
                 url,
                 params={"api-version": self.settings.foundry_api_version},
                 headers={**await self._headers(), "Content-Type": "application/json"},
-                json={
-                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": transcript}],
-                    "temperature": 0,
-                },
+                json=payload,
             )
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"].strip()

@@ -9,7 +9,11 @@ struct VoicePromptIOSApp: App {
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let baseURL = URL(string: UserDefaults.standard.string(forKey: "backendURL") ?? "https://voiceprompt.invalid/")!
+        let baseURL = URL(string:
+            UserDefaults.standard.string(forKey: "backendURL")
+                ?? Bundle.main.object(forInfoDictionaryKey: "BACKEND_URL") as? String
+                ?? "https://voiceprompt.invalid/"
+        )!
         let configuration = EntraConfiguration(
             tenantID: Bundle.main.object(forInfoDictionaryKey: "ENTRA_TENANT_ID") as? String ?? "",
             clientID: Bundle.main.object(forInfoDictionaryKey: "ENTRA_CLIENT_ID") as? String ?? "",

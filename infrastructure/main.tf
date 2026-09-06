@@ -56,6 +56,15 @@ resource "azurerm_user_assigned_identity" "workload" {
   tags                = local.common_tags
 }
 
+resource "azurerm_container_registry" "main" {
+  name                = "crvoiceprompt${local.suffix}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  sku                 = "Basic"
+  admin_enabled       = false
+  tags                = local.common_tags
+}
+
 resource "azurerm_log_analytics_workspace" "main" {
   name                = "log-voiceprompt-${local.suffix}"
   location            = azurerm_resource_group.main.location
@@ -83,6 +92,11 @@ resource "azurerm_container_app_environment" "main" {
   internal_load_balancer_enabled = false
   zone_redundancy_enabled        = false
   tags                           = local.common_tags
+
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 resource "azurerm_storage_account" "main" {
@@ -120,19 +134,17 @@ resource "azurerm_storage_queue" "poison" {
   storage_account_id = azurerm_storage_account.main.id
 }
 
-resource "azurerm_storage_table" "sessions" {
-  name                 = "sessions"
-  storage_account_name = azurerm_storage_account.main.name
-}
+resource "azapi_resource" "tables" {
+  for_each = toset(["sessions", "transcripts", "transcriptexpiry"])
 
-resource "azurerm_storage_table" "transcripts" {
-  name                 = "transcripts"
-  storage_account_name = azurerm_storage_account.main.name
-}
-
-resource "azurerm_storage_table" "transcript_expiry" {
-  name                 = "transcriptexpiry"
-  storage_account_name = azurerm_storage_account.main.name
+  type      = "Microsoft.Storage/storageAccounts/tableServices/tables@2025-01-01"
+  name      = each.key
+  parent_id = "${azurerm_storage_account.main.id}/tableServices/default"
+  body = {
+    properties = {
+      signedIdentifiers = []
+    }
+  }
 }
 
 resource "azurerm_storage_management_policy" "cleanup" {
@@ -204,15 +216,11 @@ resource "azurerm_web_pubsub" "main" {
 resource "azurerm_web_pubsub_hub" "main" {
   name          = "voiceprompt"
   web_pubsub_id = azurerm_web_pubsub.main.id
-  event_handler {
-    url_template       = "https://${azurerm_container_app.api.latest_revision_fqdn}/v1/events"
-    user_event_pattern = "*"
-    system_events      = ["connected", "disconnected"]
-  }
 }
 
 locals {
-  app_environment = [
+  app_environment = concat([
+    { name = "AZURE_CLIENT_ID", value = azurerm_user_assigned_identity.workload.client_id },
     { name = "VOICEPROMPT_ENVIRONMENT", value = "production" },
     { name = "VOICEPROMPT_STORAGE_ACCOUNT_NAME", value = azurerm_storage_account.main.name },
     { name = "VOICEPROMPT_ENTRA_TENANT_ID", value = var.entra_tenant_id },
@@ -224,7 +232,9 @@ locals {
     { name = "VOICEPROMPT_CLEANUP_DEPLOYMENT", value = var.cleanup_deployment },
     { name = "VOICEPROMPT_WEB_PUBSUB_ENDPOINT", value = "https://${azurerm_web_pubsub.main.hostname}" },
     { name = "APPLICATIONINSIGHTS_CONNECTION_STRING", value = azurerm_application_insights.main.connection_string },
-  ]
+    ], var.cleanup_temperature == null ? [] : [
+    { name = "VOICEPROMPT_CLEANUP_TEMPERATURE", value = tostring(var.cleanup_temperature) },
+  ])
 }
 
 resource "azurerm_container_app" "api" {
@@ -232,12 +242,28 @@ resource "azurerm_container_app" "api" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
   tags                         = local.common_tags
 
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload.id]
   }
+
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.workload.id
+  }
+
+  depends_on = [
+    azurerm_role_assignment.registry,
+    azurerm_role_assignment.storage,
+    azurerm_role_assignment.web_pubsub,
+    azurerm_private_endpoint.storage,
+    azapi_resource.tables,
+    azurerm_storage_queue.work,
+    azurerm_storage_queue.poison,
+  ]
 
   ingress {
     external_enabled = true
@@ -257,6 +283,19 @@ resource "azurerm_container_app" "api" {
       image  = var.container_image
       cpu    = 0.25
       memory = "0.5Gi"
+      liveness_probe {
+        transport        = "HTTP"
+        port             = 8000
+        path             = "/health/live"
+        initial_delay    = 10
+        interval_seconds = 30
+      }
+      readiness_probe {
+        transport        = "HTTP"
+        port             = 8000
+        path             = "/health/ready"
+        interval_seconds = 10
+      }
       dynamic "env" {
         for_each = local.app_environment
         content {
@@ -279,12 +318,28 @@ resource "azurerm_container_app_job" "worker" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   replica_timeout_in_seconds   = 1200
   replica_retry_limit          = 2
+  workload_profile_name        = "Consumption"
   tags                         = local.common_tags
 
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload.id]
   }
+
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.workload.id
+  }
+
+  depends_on = [
+    azurerm_role_assignment.registry,
+    azurerm_role_assignment.storage,
+    azurerm_role_assignment.foundry,
+    azurerm_role_assignment.web_pubsub,
+    azurerm_private_endpoint.storage,
+    azapi_resource.tables,
+    azurerm_storage_queue.poison,
+  ]
 
   event_trigger_config {
     parallelism              = 1
@@ -331,12 +386,25 @@ resource "azurerm_container_app_job" "cleanup" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   replica_timeout_in_seconds   = 300
   replica_retry_limit          = 2
+  workload_profile_name        = "Consumption"
   tags                         = local.common_tags
 
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload.id]
   }
+
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.workload.id
+  }
+
+  depends_on = [
+    azurerm_role_assignment.registry,
+    azurerm_role_assignment.storage,
+    azurerm_private_endpoint.storage,
+    azapi_resource.tables,
+  ]
 
   schedule_trigger_config {
     cron_expression          = "0 */1 * * *"

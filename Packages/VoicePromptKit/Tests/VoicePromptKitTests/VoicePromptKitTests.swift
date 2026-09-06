@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import VoicePromptKit
+import VoicePromptKit
 
 @Test func chunkIdentityIsStable() {
     let id = UUID()

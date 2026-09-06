@@ -26,9 +26,15 @@ iOS and macOS. No client secret is used by either native application.
    - `allowed_entra_object_ids = ["<user-object-id>"]`
 7. Copy `Apple/Configuration.xcconfig.example` to an ignored local configuration,
    fill `ENTRA_TENANT_ID`,
-   `ENTRA_API_SCOPE = "api://<api-application-client-id>/VoicePrompt.Access"`,
+   `ENTRA_API_SCOPE = api:/$()/<api-application-client-id>/VoicePrompt.Access`,
    `ENTRA_IOS_CLIENT_ID`, and `ENTRA_MAC_CLIENT_ID`, then apply those build settings
-   to both generated Xcode targets.
+   to both generated Xcode targets. The checked-in `Apple/project.yml` already
+   selects `Configuration.xcconfig` for Debug and Release in both targets.
+
+In `.xcconfig` files, `//` starts a comment, even inside quoted values. The empty
+`$()` expansion above preserves the full `api://...` scope. Use the same pattern
+for HTTPS URLs. Do not add empty Entra settings to the targets in `project.yml`:
+target settings override the values from the configuration file.
 
 The clients use Authorization Code with PKCE in `ASWebAuthenticationSession`.
 Refresh tokens are device-only Keychain items. The backend partitions ownership by
@@ -42,20 +48,124 @@ technical recording; set `speech_deployment` to the winner. Evaluate the existin
 GPT-5.6 Luna deployment first for detailed intent preservation and change
 `cleanup_deployment` to GPT-5.6 Terra only if it fails.
 
-Copy `infrastructure/terraform.tfvars.example` outside source control, fill its
-placeholders, and run:
+The guide assumes those model deployments already exist; their names are not a
+guarantee of availability in your subscription. If no Foundry resource exists,
+select a supported region and available models before provisioning. A model
+available in an editor or Copilot is not automatically an Azure deployment.
+
+Set `foundry_endpoint` to the account's Azure OpenAI endpoint, such as
+`https://<account>.openai.azure.com`, not the Foundry project URL ending in
+`/api/projects/<project>`. Set `foundry_resource_id` to the parent account's Azure
+resource ID, not the project ID. The current backend uses this one endpoint for
+both deployments. A Realtime-only deployment cannot replace the file-transcription
+deployment used for recorded M4A segments.
+
+Cleanup requests omit `temperature` by default because GPT-5.6 Luna rejects a
+zero-temperature override. For a model supporting sampling controls, optionally
+set Terraform's `cleanup_temperature` (or `VOICEPROMPT_CLEANUP_TEMPERATURE` when
+running locally) to a value from 0 to 2. Leave it unset for Luna.
+
+Copy `infrastructure/terraform.tfvars.example` to the ignored
+`infrastructure/terraform.tfvars` and fill the subscription, region, identity, and
+Foundry values. The deploying account needs Azure resource/RBAC permissions;
+Entra Global Administrator alone does not grant subscription access.
+
+The configuration includes a Basic private container registry with its admin
+account disabled. For the first deployment, bootstrap only the registry and its
+pull identity before publishing the backend image:
 
 ```bash
 terraform -chdir=infrastructure init
+terraform -chdir=infrastructure validate
+terraform -chdir=infrastructure plan \
+  -var='container_image=bootstrap-only-not-used' \
+  -target=azurerm_role_assignment.registry \
+  -out=/tmp/voiceprompt-registry.tfplan
+terraform -chdir=infrastructure show /tmp/voiceprompt-registry.tfplan
+terraform -chdir=infrastructure apply /tmp/voiceprompt-registry.tfplan
+```
+
+This targeted bootstrap is a one-time exception: it creates only the registry,
+workload identity, pull role, and their resource-group/naming dependencies. The
+temporary image value must never be used for a full deployment.
+
+Build and publish an AMD64 image, then use its immutable digest as
+`container_image` in `terraform.tfvars`:
+
+```bash
+ACR_LOGIN_SERVER=$(terraform -chdir=infrastructure output -raw registry_login_server)
+ACR_NAME=${ACR_LOGIN_SERVER%%.*}
+az acr login --name "$ACR_NAME" --resource-group rg-voiceprompt-prod
+docker build --platform linux/amd64 -t "$ACR_LOGIN_SERVER/voiceprompt:setup" backend
+docker push "$ACR_LOGIN_SERVER/voiceprompt:setup"
+az acr repository show --name "$ACR_NAME" --resource-group rg-voiceprompt-prod \
+  --image voiceprompt:setup --query digest -o tsv
+```
+
+Use `<registry-login-server>/voiceprompt@sha256:<digest>`, not a mutable tag. If the
+build needs an organization package mirror, pass a pip configuration file as a
+BuildKit secret: `--secret id=pip_config,src=/path/to/pip.conf`. A custom CA can be
+passed with `--secret id=custom_ca,src=/path/to/ca.crt`; do not disable TLS checks.
+Use your configured resource group in these commands if it differs from
+`rg-voiceprompt-prod`; explicit selection avoids unrelated Azure CLI defaults.
+
+Confirm the workload identity's `AcrPull` assignment has propagated, then review
+and apply the full plan:
+
+```bash
+terraform -chdir=infrastructure validate
 terraform -chdir=infrastructure plan -out=/tmp/voiceprompt.tfplan
 terraform -chdir=infrastructure show /tmp/voiceprompt.tfplan
 terraform -chdir=infrastructure apply /tmp/voiceprompt.tfplan
 ```
 
-Do not apply if the plan replaces/deletes existing resources or introduces a
-non-consumption SKU. The current configuration creates only app-specific resources.
+Do not apply if the plan replaces/deletes existing resources or introduces
+unapproved SKUs. Compute uses the Consumption profile and Web PubSub uses Free_F1;
+the Basic registry and three private endpoints have ongoing charges even while
+compute is idle. Obtain approval for those charges. Existing Foundry resources
+are referenced, not recreated.
+
+Storage accounts use the AzureRM `storage.data_plane_available = false` feature,
+and queues and containers use their storage account ID for ARM provisioning.
+Tables use AzAPI ARM resources because AzureRM 4.x still performs data-plane
+table/ACL operations even when configured with `storage_account_id`.
+This avoids key-based availability polling and does not require
+opening the private data plane. Runtime workloads select their user-assigned
+identity with `AZURE_CLIENT_ID`.
+The worker drains available queue messages and exits; new messages trigger new
+job executions rather than leaving an idle worker running until its timeout.
+
+Terraform state and plans can contain sensitive values. Keep them out of source
+control and preserve a secure state backup before removing or replacing a local
+checkout.
+
+### Point the Apple apps at the backend
+
+After deployment, obtain the API endpoint with
+`terraform -chdir=infrastructure output -raw api_url`. In the ignored
+`Apple/Configuration.xcconfig`, set:
+
+```text
+BACKEND_URL = https:/$()/<your-api-hostname>/
+```
+
+Rebuild and reinstall the apps after changing configuration. Both apps read this
+URL from their built Info.plist; an existing `backendURL` UserDefaults value or
+Xcode launch argument takes precedence. The example's `voiceprompt.invalid` URL
+is deliberately unusable: Entra sign-in can be configured independently, but
+upload and transcription require a deployed backend.
+Restart the macOS app after editing its Backend URL in History & Settings.
 
 ## Apple signing
+
+### Local iOS Simulator testing
+
+Select the **VoicePromptIOS** scheme and a named **iOS Simulator** destination
+(for example, **iPhone 17**) in Xcode's toolbar, then choose **Product > Run**
+(`Cmd+R`). Simulator runs do not require a Personal Team or a development
+certificate. A connected physical iPhone is a different destination: if Xcode
+reports that a development team is required, check that the selected destination
+is actually a simulator.
 
 ### Local iPhone testing with a free Personal Team
 

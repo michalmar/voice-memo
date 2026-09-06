@@ -49,7 +49,7 @@ final class CompletionSynchronizer: ObservableObject {
                 for item in summaries where item.createdAt >= cutoff {
                     group.addTask { try? await self.client.transcript(id: item.id) }
                 }
-                return await group.reduce(into: []) { if let value = $1 { $0.append(value) } }
+                return await group.reduce(into: [Transcript]()) { if let value = $1 { $0.append(value) } }
             }
             history = fetched.sorted { $0.createdAt > $1.createdAt }
             copied = copied.intersection(Set(history.map(\.id)))
@@ -77,4 +77,3 @@ final class CompletionSynchronizer: ObservableObject {
         await notifications.completed()
     }
 }
-
