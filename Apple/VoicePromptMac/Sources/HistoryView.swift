@@ -1,5 +1,6 @@
 import ServiceManagement
 import SwiftUI
+import VoicePromptKit
 
 struct HistoryView: View {
     @ObservedObject var synchronizer: CompletionSynchronizer

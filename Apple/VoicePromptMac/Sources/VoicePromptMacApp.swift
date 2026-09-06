@@ -25,7 +25,8 @@ struct VoicePromptMacApp: App {
         let client = APIClient(baseURL: baseURL, credentials: credentials)
         let sync = CompletionSynchronizer(client: client, clipboard: SystemClipboard(), notifications: SystemNotifications())
         _synchronizer = StateObject(wrappedValue: sync)
-        events = EventClient(api: client)
+        let events = EventClient(api: client)
+        self.events = events
         Task {
             await sync.reconcile()
             await events.connect { id in await sync.receiveCompletion(id: id) }

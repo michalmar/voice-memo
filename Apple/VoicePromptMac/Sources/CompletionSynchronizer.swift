@@ -45,7 +45,7 @@ final class CompletionSynchronizer: ObservableObject {
         do {
             let summaries = try await client.transcripts()
             let cutoff = Date().addingTimeInterval(-48 * 60 * 60)
-            let fetched = await withTaskGroup(of: Transcript?.self) { group in
+            let fetched: [Transcript] = await withTaskGroup(of: Transcript?.self) { group in
                 for item in summaries where item.createdAt >= cutoff {
                     group.addTask { try? await self.client.transcript(id: item.id) }
                 }
@@ -77,4 +77,3 @@ final class CompletionSynchronizer: ObservableObject {
         await notifications.completed()
     }
 }
-

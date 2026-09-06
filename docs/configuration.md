@@ -57,6 +57,41 @@ non-consumption SKU. The current configuration creates only app-specific resourc
 
 ## Apple signing
 
+### Local Mac installation
+
+Use macOS 14 or later, Xcode with Swift 6.3 or later, and XcodeGen
+(`brew install xcodegen` if it is missing). A local, ad-hoc-signed build does not
+require a paid Apple Developer account or notarization.
+
+From the repository root, preserve any existing local configuration, generate the
+project, and build only the Mac app:
+
+```bash
+if [ ! -f Apple/Configuration.xcconfig ]; then
+  cp Apple/Configuration.xcconfig.example Apple/Configuration.xcconfig
+fi
+make apple-project
+xcodebuild -project Apple/VoicePrompt.xcodeproj \
+  -scheme VoicePromptMac -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath Apple/build \
+  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES build
+```
+
+Quit any existing VoicePrompt instance before installing or updating it:
+
+```bash
+mkdir -p "$HOME/Applications"
+ditto Apple/build/Build/Products/Debug/VoicePromptMac.app \
+  "$HOME/Applications/VoicePromptMac.app"
+open "$HOME/Applications/VoicePromptMac.app"
+```
+
+VoicePrompt runs in the **menu bar**, not the Dock. Click its icon and choose
+**History & Settings** to open the app window. Installation and launch work without
+backend configuration, but the app remains **Offline**: sign-in, transcript sync,
+and automatic clipboard delivery require the backend and Entra setup above.
+The Mac app receives transcripts; recording is handled by the iOS app.
+
 ### Local iPhone testing with a free Personal Team
 
 Running on your own iPhone from Xcode uses **development signing**, not App Store

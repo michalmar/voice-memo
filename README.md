@@ -31,6 +31,8 @@ docker build -t voiceprompt:local backend
 
 On macOS, install XcodeGen, run `make apple-project`, then build the iOS simulator
 and macOS schemes in `Apple/VoicePrompt.xcodeproj`.
+For a local menu-bar app installation, see
+[Local Mac installation](docs/configuration.md#local-mac-installation).
 
 Development authentication is disabled by default. For local-only API work, copy
 `backend/.env.example`, leave Azure resource fields empty, and explicitly set
