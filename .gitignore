@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+Apple/*.xcodeproj/
+Apple/build/
+Apple/Configuration.xcconfig
+Packages/VoicePromptKit/.build/
+infrastructure/.terraform/
+infrastructure/*.tfstate*
+infrastructure/*.tfplan
+infrastructure/terraform.tfvars

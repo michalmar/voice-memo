@@ -1,0 +1,10 @@
+subscription_id         = "00000000-0000-0000-0000-000000000000"
+container_image         = "replace.azurecr.io/voiceprompt@sha256:replace"
+entra_tenant_id         = "00000000-0000-0000-0000-000000000000"
+entra_audience          = "00000000-0000-0000-0000-000000000000"
+entra_required_scope    = "VoicePrompt.Access"
+allowed_entra_object_ids = ["00000000-0000-0000-0000-000000000000"]
+foundry_endpoint        = "https://replace-with-existing-foundry-resource.openai.azure.com"
+foundry_resource_id     = "/subscriptions/replace/resourceGroups/replace/providers/Microsoft.CognitiveServices/accounts/replace"
+speech_deployment       = "replace-with-evaluated-speech-deployment"
+cleanup_deployment      = "gpt-5.6-luna"
