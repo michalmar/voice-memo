@@ -6,7 +6,8 @@ struct HistoryView: View {
     @ObservedObject var synchronizer: CompletionSynchronizer
     let credentials: EntraCredentialProvider
     let authorization: EntraAuthorizationCoordinator
-    @AppStorage("backendURL") private var backendURL = "https://voiceprompt.invalid/"
+    @AppStorage("backendURL") private var backendURL =
+        Bundle.main.object(forInfoDictionaryKey: "BACKEND_URL") as? String ?? "https://voiceprompt.invalid/"
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {

@@ -1,13 +1,17 @@
 import asyncio
 import base64
 import json
+import logging
 
 from azure.identity.aio import DefaultAzureCredential
-from azure.storage.queue.aio import QueueServiceClient
+from azure.storage.queue.aio import QueueClient, QueueServiceClient
 
 from .config import get_settings
 from .processing import FoundryClient, Processor
 from .runtime import create_notifier, create_repository
+
+
+logger = logging.getLogger(__name__)
 
 
 async def run() -> None:
@@ -22,6 +26,10 @@ async def run() -> None:
     )
     queue = queue_service.get_queue_client(settings.work_queue)
     poison = queue_service.get_queue_client(settings.poison_queue)
+    await drain_queue(queue, poison, processor)
+
+
+async def drain_queue(queue: QueueClient, poison: QueueClient, processor: Processor) -> None:
     while True:
         found = False
         async for message in queue.receive_messages(messages_per_page=8, visibility_timeout=300):
@@ -31,11 +39,12 @@ async def run() -> None:
                 await processor.process_safely(payload)
                 await queue.delete_message(message.id, message.pop_receipt)
             except Exception:
+                logger.exception("Queue message %s failed on attempt %s", message.id, message.dequeue_count)
                 if message.dequeue_count >= 5:
                     await poison.send_message(message.content)
                     await queue.delete_message(message.id, message.pop_receipt)
         if not found:
-            await asyncio.sleep(2)
+            return
 
 
 if __name__ == "__main__":

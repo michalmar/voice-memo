@@ -66,3 +66,14 @@ variable "cleanup_deployment" {
   default     = "gpt-5.6-luna"
   description = "Existing cleanup deployment name."
 }
+
+variable "cleanup_temperature" {
+  type        = number
+  default     = null
+  description = "Optional sampling override (0-2). Leave null for reasoning models that reject temperature overrides."
+
+  validation {
+    condition     = var.cleanup_temperature == null ? true : var.cleanup_temperature >= 0 && var.cleanup_temperature <= 2
+    error_message = "cleanup_temperature must be null or between 0 and 2."
+  }
+}

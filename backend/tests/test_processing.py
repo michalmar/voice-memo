@@ -1,11 +1,17 @@
 import hashlib
+import json
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
+from azure.core.credentials import AccessToken
+from azure.core.credentials_async import AsyncTokenCredential
+from pydantic import ValidationError
 
 from voiceprompt.config import Settings
 from voiceprompt.models import SessionComplete, SessionCreate, SessionStatus
-from voiceprompt.processing import Processor
+from voiceprompt.processing import FoundryClient, Processor
 from voiceprompt.repository import MemoryRepository
 from voiceprompt.service import SessionService
 from voiceprompt.stitching import stitch_segments
@@ -18,6 +24,46 @@ class FakeModels:
 
     async def refine(self, transcript: str) -> str:
         return f"# Prompt\n\n{transcript}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temperature", [None, 0, 0.5, 2])
+async def test_foundry_cleanup_temperature_is_opt_in(monkeypatch, temperature):
+    settings = Settings(
+        environment="test",
+        foundry_endpoint="https://example.openai.azure.com/",
+        cleanup_temperature=temperature,
+    )
+    credential = AsyncMock(spec=AsyncTokenCredential)
+    credential.get_token.return_value = AccessToken("test-token", 9999999999)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/openai/deployments/gpt-5.6-luna/chat/completions"
+        assert request.url.params["api-version"] == settings.foundry_api_version
+        assert request.headers["Authorization"] == "Bearer test-token"
+        payload = json.loads(request.content)
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][1] == {"role": "user", "content": "Keep this detail."}
+        if temperature is None:
+            assert "temperature" not in payload
+        else:
+            assert payload["temperature"] == temperature
+        return httpx.Response(200, json={"choices": [{"message": {"content": "  Keep this detail.\n"}}]})
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr("voiceprompt.processing.httpx.AsyncClient", lambda **kwargs: http_client)
+    assert await FoundryClient(settings, credential).refine("Keep this detail.") == "Keep this detail."
+    credential.get_token.assert_awaited_once_with("https://cognitiveservices.azure.com/.default")
+
+
+def test_cleanup_temperature_defaults_to_model_default():
+    assert Settings(environment="test").cleanup_temperature is None
+
+
+@pytest.mark.parametrize("temperature", [-0.1, 2.1, float("nan"), float("inf")])
+def test_cleanup_temperature_rejects_invalid_values(temperature):
+    with pytest.raises(ValidationError):
+        Settings(environment="test", cleanup_temperature=temperature)
 
 
 def test_stitching_removes_boundary_overlap():

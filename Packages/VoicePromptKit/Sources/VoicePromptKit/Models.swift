@@ -102,6 +102,25 @@ public struct ChunkMetadata: Codable, Identifiable, Equatable, Sendable {
     public let fileURL: URL
     public var attempts: Int
 
+    public init(
+        sessionID: UUID,
+        sequence: Int,
+        startedMilliseconds: Int,
+        durationMilliseconds: Int,
+        byteLength: Int,
+        checksum: String,
+        fileURL: URL,
+        attempts: Int
+    ) {
+        self.sessionID = sessionID
+        self.sequence = sequence
+        self.startedMilliseconds = startedMilliseconds
+        self.durationMilliseconds = durationMilliseconds
+        self.byteLength = byteLength
+        self.checksum = checksum
+        self.fileURL = fileURL
+        self.attempts = attempts
+    }
+
     public var id: String { "\(sessionID.uuidString)-\(sequence)" }
 }
-

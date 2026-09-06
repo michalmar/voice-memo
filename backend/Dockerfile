@@ -4,6 +4,8 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY src ./src
 RUN --mount=type=secret,id=custom_ca,required=false \
+    --mount=type=secret,id=pip_config,target=/etc/pip.conf,required=false \
+    set -eu; \
     if [ -f /run/secrets/custom_ca ]; then \
       cp /run/secrets/custom_ca /usr/local/share/ca-certificates/build-ca.crt && update-ca-certificates; \
     fi; \
