@@ -3,6 +3,22 @@ import Foundation
 import Security
 
 public actor KeychainCredentialStore {
+    public struct StoreError: LocalizedError {
+        public let status: OSStatus
+
+        public var errorDescription: String? {
+            if status == errSecMissingEntitlement {
+                #if os(macOS)
+                return "VoicePrompt cannot access the sign-in Keychain. Rebuild and install the Mac app with code signing enabled."
+                #else
+                return "iOS cannot access the sign-in Keychain. Rebuild the simulator app with code signing enabled (ad-hoc signing is sufficient)."
+                #endif
+            }
+            let detail = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown Keychain error"
+            return "Sign-in Keychain error (\(status)): \(detail)"
+        }
+    }
+
     private let service: String
     public init(service: String) { self.service = service }
 
@@ -12,13 +28,16 @@ public actor KeychainCredentialStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = value
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else {
-            throw CocoaError(.fileWriteNoPermission)
+        let attributes: [String: Any] = [
+            kSecValueData as String: value,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            let add = query.merging(attributes) { _, new in new }
+            status = SecItemAdd(add as CFDictionary, nil)
         }
+        guard status == errSecSuccess else { throw StoreError(status: status) }
     }
 
     public func read(account: String) throws -> Data? {
@@ -32,7 +51,7 @@ public actor KeychainCredentialStore {
         var value: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &value)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw CocoaError(.fileReadNoPermission) }
+        guard status == errSecSuccess else { throw StoreError(status: status) }
         return value as? Data
     }
     public func clear(account: String) {
@@ -97,8 +116,32 @@ private struct TokenResponse: Decodable {
     }
 }
 
+private struct TokenErrorResponse: Decodable {
+    let error: String
+    let errorDescription: String?
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
+    }
+}
+
 public actor EntraCredentialProvider: CredentialProvider {
-    public enum Error: Swift.Error { case signInRequired, invalidTokenResponse }
+    public enum Error: LocalizedError {
+        case signInRequired, invalidTokenResponse
+        case authorization(code: String, description: String?)
+
+        public var errorDescription: String? {
+            switch self {
+            case .signInRequired:
+                return "Sign in with Microsoft to upload your saved recordings."
+            case .invalidTokenResponse:
+                return "Microsoft returned an invalid sign-in response. Please try signing in again."
+            case .authorization(let code, let description):
+                return "Microsoft sign-in failed (\(code)). \(description ?? "Please try again.")"
+            }
+        }
+    }
 
     private let configuration: EntraConfiguration
     private let store: KeychainCredentialStore
@@ -151,6 +194,7 @@ public actor EntraCredentialProvider: CredentialProvider {
     ) async throws -> EntraTokens {
         var request = URLRequest(url: configuration.tokenEndpoint)
         request.httpMethod = "POST"
+        request.timeoutInterval = 30
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = parameters
             .sorted { $0.key < $1.key }
@@ -158,9 +202,19 @@ public actor EntraCredentialProvider: CredentialProvider {
             .joined(separator: "&")
             .data(using: .utf8)
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let value = try? JSONDecoder().decode(TokenResponse.self, from: data)
-        else { throw Error.invalidTokenResponse }
+        guard let http = response as? HTTPURLResponse else { throw Error.invalidTokenResponse }
+        if !(200..<300).contains(http.statusCode) {
+            guard let failure = try? JSONDecoder().decode(TokenErrorResponse.self, from: data) else {
+                throw Error.invalidTokenResponse
+            }
+            if fallbackRefreshToken != nil,
+               ["invalid_grant", "interaction_required", "consent_required"].contains(failure.error) {
+                throw Error.signInRequired
+            }
+            throw Error.authorization(code: failure.error, description: failure.errorDescription)
+        }
+        let value = try JSONDecoder().decode(TokenResponse.self, from: data)
+        guard !value.accessToken.isEmpty, value.expiresIn > 0 else { throw Error.invalidTokenResponse }
         let tokens = EntraTokens(
             accessToken: value.accessToken,
             refreshToken: value.refreshToken ?? fallbackRefreshToken,
@@ -171,9 +225,49 @@ public actor EntraCredentialProvider: CredentialProvider {
     }
 }
 
+// Safari can call this on an XPC queue. Creating the handler outside MainActor
+// prevents Swift 6 from asserting main-actor isolation when Objective-C invokes it.
+final class AuthorizationCallback: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<URL, Swift.Error>?
+
+    init(_ continuation: CheckedContinuation<URL, Swift.Error>) {
+        self.continuation = continuation
+    }
+
+    var handler: @Sendable (URL?, Swift.Error?) -> Void {
+        { [self] url, error in complete(url: url, error: error) }
+    }
+
+    func complete(url: URL? = nil, error: Swift.Error? = nil) {
+        // A failed start and the system callback may both try to finish.
+        let pending = lock.withLock {
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        if let pending {
+            if let error { pending.resume(throwing: error) }
+            else if let url { pending.resume(returning: url) }
+            else { pending.resume(throwing: EntraAuthorizationCoordinator.Error.invalidCallback) }
+        }
+    }
+}
+
 @MainActor
 public final class EntraAuthorizationCoordinator: NSObject, ASWebAuthenticationPresentationContextProviding {
-    public enum Error: Swift.Error { case invalidCallback, stateMismatch }
+    public enum Error: LocalizedError {
+        case invalidCallback, stateMismatch, alreadySigningIn, couldNotStart
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidCallback: return "Microsoft sign-in did not return an authorization code."
+            case .stateMismatch: return "The sign-in response could not be verified. Please try again."
+            case .alreadySigningIn: return "A Microsoft sign-in is already in progress."
+            case .couldNotStart: return "The Microsoft sign-in window could not be opened. Please try again."
+            }
+        }
+    }
 
     private let configuration: EntraConfiguration
     private var webSession: ASWebAuthenticationSession?
@@ -183,6 +277,8 @@ public final class EntraAuthorizationCoordinator: NSObject, ASWebAuthenticationP
     }
 
     public func signIn(using provider: EntraCredentialProvider) async throws {
+        guard webSession == nil else { throw Error.alreadySigningIn }
+        defer { webSession = nil }
         let verifier = Self.randomURLSafeString()
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded
         let state = Self.randomURLSafeString()
@@ -200,22 +296,28 @@ public final class EntraAuthorizationCoordinator: NSObject, ASWebAuthenticationP
         let callbackScheme = URL(string: configuration.redirectURI)?.scheme
         let callback: URL = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<URL, Swift.Error>) in
-            let session = ASWebAuthenticationSession(url: components.url!, callbackURLScheme: callbackScheme) {
-                url, error in
-                if let error { continuation.resume(throwing: error) }
-                else if let url { continuation.resume(returning: url) }
-                else { continuation.resume(throwing: Error.invalidCallback) }
-            }
+            let callback = AuthorizationCallback(continuation)
+            let session = ASWebAuthenticationSession(
+                url: components.url!, callbackURLScheme: callbackScheme,
+                completionHandler: callback.handler
+            )
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = false
             webSession = session
-            session.start()
+            if !session.start() {
+                callback.complete(error: Error.couldNotStart)
+            }
         }
         let values = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard values.first(where: { $0.name == "state" })?.value == state else { throw Error.stateMismatch }
+        if let error = values.first(where: { $0.name == "error" })?.value {
+            throw EntraCredentialProvider.Error.authorization(
+                code: error,
+                description: values.first(where: { $0.name == "error_description" })?.value
+            )
+        }
         guard let code = values.first(where: { $0.name == "code" })?.value else { throw Error.invalidCallback }
         try await provider.exchangeAuthorizationCode(code, verifier: verifier)
-        webSession = nil
     }
 
     public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {

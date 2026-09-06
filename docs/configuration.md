@@ -155,6 +155,23 @@ Xcode launch argument takes precedence. The example's `voiceprompt.invalid` URL
 is deliberately unusable: Entra sign-in can be configured independently, but
 upload and transcription require a deployed backend.
 Restart the macOS app after editing its Backend URL in History & Settings.
+The Mac app automatically removes a saved `voiceprompt.invalid` placeholder so it
+cannot override a newly configured build. Deliberately configured custom URLs are
+preserved.
+
+### Where recordings and transcripts live
+
+The API's `VOICEPROMPT_STORAGE_ACCOUNT_NAME` identifies the private Azure Storage
+account. Audio uploads go to the **audio** blob container, partitioned by owner and
+recording/session ID. Session state and intermediate segment text live in the
+**sessions** table. Completed transcripts are rows in the **transcripts** table:
+the row's JSON `payload` contains `markdown`, `session_id`, `created_at`, and
+`expires_at`. The transcript UUID is the row key. The **transcriptexpiry** table
+indexes cleanup; completed transcripts are retained for **48 hours**.
+
+Storage public access is disabled. There is no public Markdown download URL.
+Signed-in apps retrieve records using `GET /v1/transcripts` and
+`GET /v1/transcripts/{transcript_id}` on the configured backend.
 
 ## Apple signing
 
@@ -196,6 +213,30 @@ backend configuration, but the app remains **Offline**: sign-in, transcript sync
 and automatic clipboard delivery require the backend and Entra setup above.
 The Mac app receives transcripts; recording is handled by the iOS app.
 
+Sign in with Microsoft **on the Mac as well as on iOS**; each app uses its own
+client registration and Keychain. History & Settings shows the Microsoft login,
+API connection, live-update connection, and any actionable errors separately.
+The app refreshes history after sign-in and WebSocket reconnects, and polls every
+minute to recover missed completion events. A WebSocket outage does not prevent
+API history refresh. **Sync Now** refreshes immediately.
+
+Click anywhere on a history record to copy that record's **full Markdown** to the
+clipboard, including text beyond the three-line preview. The row briefly shows
+**Copied**. Older records and repeated clicks can be copied again; automatic
+delivery deduplication does not disable manual copying.
+
+After changing app configuration or updating source, rebuild and replace the
+installed app as above: launching an older copy does not pick up new Info.plist
+settings. Mac regression tests can be run without a paid developer account:
+
+```bash
+make apple-project
+xcodebuild -project Apple/VoicePrompt.xcodeproj -scheme VoicePromptMac \
+  -destination 'platform=macOS' \
+  -derivedDataPath "$HOME/Library/Developer/Xcode/DerivedData/VoicePrompt" \
+  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES test
+```
+
 ### Local iOS Simulator testing
 
 Select the **VoicePromptIOS** scheme and a named **iOS Simulator** destination
@@ -204,6 +245,40 @@ Select the **VoicePromptIOS** scheme and a named **iOS Simulator** destination
 certificate. A connected physical iPhone is a different destination: if Xcode
 reports that a development team is required, check that the selected destination
 is actually a simulator.
+
+After authentication, the app shows **Signed in with Microsoft** and **Sign Out**;
+it restores this status from Keychain on launch. Canceled or failed sign-ins show
+their reason. **Cloud ready** means the API is reachable, not that the account is
+authorized.
+
+Recording works before sign-in and while offline. Stopped recordings remain saved
+on the device until the server acknowledges the complete upload. Use **Retry saved
+uploads** after signing in or reconnecting. Rebuilding/reinstalling over the existing
+simulator app preserves its recordings; the queue resolves audio paths against the
+current sandbox rather than keeping obsolete container paths. Do not uninstall the
+app to troubleshoot uploads, since uninstalling deletes its local recordings.
+
+Uploads display segment progress and actionable failures. Successfully uploaded
+recordings move through transcription to **Complete**; cloud failures are shown
+instead of leaving an indefinite spinner. If processing takes longer than about
+three minutes, use **Check processing status**. Starting another recording does not
+cancel processing in the cloud.
+
+Run the iOS lifecycle regression tests with:
+
+```bash
+make apple-project
+xcodebuild -project Apple/VoicePrompt.xcodeproj -scheme VoicePromptIOS \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -derivedDataPath "$HOME/Library/Developer/Xcode/DerivedData/VoicePrompt" \
+  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES test
+```
+
+Keep test build products outside macOS-protected folders such as Documents:
+the simulator test loader needs access to the injected test libraries. Keep code
+signing enabled when running the simulator app; unsigned builds cannot access its
+sign-in Keychain. Local ad-hoc signing (`CODE_SIGN_IDENTITY=-`) needs no paid
+developer membership or certificate.
 
 ### Local iPhone testing with a free Personal Team
 

@@ -27,7 +27,20 @@ targets:
     dependencies:
       - package: VoicePromptKit
     scheme:
-      testTargets: []
+      testTargets:
+        - VoicePromptIOSTests
+  VoicePromptIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: VoicePromptIOSTests
+      - path: ../Packages/VoicePromptKit/Tests/VoicePromptKitTests/HTTPStub.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: VoicePromptIOS
+      - package: VoicePromptKit
   VoicePromptMac:
     type: application
     platform: macOS
@@ -44,4 +57,19 @@ targets:
       Debug: Configuration.xcconfig
       Release: Configuration.xcconfig
     dependencies:
+      - package: VoicePromptKit
+    scheme:
+      testTargets:
+        - VoicePromptMacTests
+  VoicePromptMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: VoicePromptMacTests
+      - path: ../Packages/VoicePromptKit/Tests/VoicePromptKitTests/HTTPStub.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: VoicePromptMac
       - package: VoicePromptKit

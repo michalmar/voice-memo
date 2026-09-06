@@ -8,9 +8,20 @@ public protocol CredentialProvider: Sendable {
 }
 
 public actor APIClient {
-    public enum Error: Swift.Error {
+    public enum Error: LocalizedError {
         case invalidResponse
         case server(status: Int, detail: String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidResponse:
+                return "The server returned an unreadable response."
+            case .server(let status, let detail):
+                if status == 401 { return "Your sign-in has expired. Sign in with Microsoft again." }
+                if status == 403 { return "Your Microsoft account does not have access to this backend." }
+                return "Server error (\(status)): \(detail)"
+            }
+        }
     }
 
     private let baseURL: URL
@@ -38,6 +49,10 @@ public actor APIClient {
 
     public func createSession(_ body: CreateSessionRequest) async throws -> Session {
         try await send(path: "v1/sessions", method: "POST", body: encoder.encode(body))
+    }
+
+    public func recordingSession(id: UUID) async throws -> Session {
+        try await send(path: "v1/sessions/\(id)")
     }
 
     public func upload(_ chunk: ChunkMetadata) async throws {
@@ -88,7 +103,7 @@ public actor APIClient {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
         request.httpBody = body
-        request.timeoutInterval = 60
+        request.timeoutInterval = 30
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Correlation-ID")
         if body != nil && headers["Content-Type"] == nil {
@@ -98,10 +113,13 @@ public actor APIClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw Error.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
-            throw Error.server(status: http.statusCode, detail: String(data: data, encoding: .utf8) ?? "")
+            let detail = (try? decoder.decode(ServerError.self, from: data))?.detail
+                ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            throw Error.server(status: http.statusCode, detail: detail)
         }
         return try decoder.decode(T.self, from: data)
     }
 }
 
 private struct ChunkReceipt: Decodable {}
+private struct ServerError: Decodable { let detail: String }

@@ -1,6 +1,7 @@
 import AVFoundation
 import CryptoKit
 import Foundation
+import OSLog
 import VoicePromptKit
 
 protocol AudioRecording: Sendable {
@@ -9,7 +10,17 @@ protocol AudioRecording: Sendable {
 }
 
 actor RecordingEngine: AudioRecording {
-    enum Error: Swift.Error { case microphoneDenied, notRecording }
+    enum Error: LocalizedError {
+        case microphoneDenied, notRecording, couldNotRecord
+
+        var errorDescription: String? {
+            switch self {
+            case .microphoneDenied: return "Microphone access is denied. Enable it for VoicePrompt in Settings."
+            case .notRecording: return "There is no active recording to save."
+            case .couldNotRecord: return "The microphone could not start recording. Check the simulator's audio input."
+            }
+        }
+    }
 
     private let segmentDuration: TimeInterval = 30
     private let directory: URL
@@ -19,6 +30,7 @@ actor RecordingEngine: AudioRecording {
     private var segmentStart = Date()
     private var timerTask: Task<Void, Never>?
     private var chunks: [ChunkMetadata] = []
+    private var segmentError: (any Swift.Error)?
 
     init(directory: URL) {
         self.directory = directory
@@ -37,21 +49,41 @@ actor RecordingEngine: AudioRecording {
         self.sessionID = sessionID
         sequence = 0
         chunks = []
-        try beginSegment()
+        segmentError = nil
+        do { try beginSegment() }
+        catch {
+            deactivateAudioSession()
+            self.sessionID = nil
+            throw error
+        }
+        let duration = segmentDuration
         timerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(segmentDuration))
-                try? await self?.rotateSegment()
+            do {
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .seconds(duration))
+                    try Task.checkCancellation()
+                    try await self?.rotateSegment()
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await self?.segmentFailed(error)
             }
         }
     }
 
     func stop() async throws -> [ChunkMetadata] {
-        guard recorder != nil else { throw Error.notRecording }
         timerTask?.cancel()
+        timerTask = nil
+        defer {
+            recorder?.stop()
+            recorder = nil
+            sessionID = nil
+            deactivateAudioSession()
+        }
+        if let segmentError { throw segmentError }
+        guard recorder != nil else { throw Error.notRecording }
         try finishSegment()
-        recorder = nil
-        try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return chunks
     }
 
@@ -76,7 +108,10 @@ actor RecordingEngine: AudioRecording {
         recorder = try AVAudioRecorder(url: url, settings: settings)
         recorder?.isMeteringEnabled = true
         segmentStart = Date()
-        recorder?.record()
+        guard recorder?.record() == true else {
+            recorder = nil
+            throw Error.couldNotRecord
+        }
     }
 
     private func finishSegment() throws {
@@ -95,5 +130,20 @@ actor RecordingEngine: AudioRecording {
             attempts: 0
         ))
     }
-}
 
+    private func segmentFailed(_ error: any Swift.Error) {
+        segmentError = error
+        recorder?.stop()
+        Logger(subsystem: "com.michalmar.voiceprompt.ios", category: "Recording")
+            .error("Audio segment failed: \(error.localizedDescription, privacy: .private)")
+    }
+
+    private func deactivateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            Logger(subsystem: "com.michalmar.voiceprompt.ios", category: "Recording")
+                .error("Could not release the microphone: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+}

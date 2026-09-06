@@ -37,7 +37,7 @@ jobs:
         working-directory: Apple
       - run: xcodegen generate
         working-directory: Apple
-      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptIOS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptIOS -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES test
         working-directory: Apple
-      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptMac CODE_SIGNING_ALLOWED=NO build
+      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptMac -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES test
         working-directory: Apple
