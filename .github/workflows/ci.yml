@@ -19,13 +19,17 @@ jobs:
       - run: python scripts/export-openapi.py
       - run: git diff --exit-code api/openapi.json
   swift-package:
-    runs-on: macos-15
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - run: swift test
         working-directory: Packages/VoicePromptKit
   apple-build:
-    runs-on: macos-15
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
@@ -33,7 +37,7 @@ jobs:
         working-directory: Apple
       - run: xcodegen generate
         working-directory: Apple
-      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptIOS -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO build
+      - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptIOS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
         working-directory: Apple
       - run: xcodebuild -project VoicePrompt.xcodeproj -scheme VoicePromptMac CODE_SIGNING_ALLOWED=NO build
         working-directory: Apple
