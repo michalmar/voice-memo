@@ -160,7 +160,7 @@ URL from their built Info.plist; an existing `backendURL` UserDefaults value or
 Xcode launch argument takes precedence. The example's `voiceprompt.invalid` URL
 is deliberately unusable: Entra sign-in can be configured independently, but
 upload and transcription require a deployed backend.
-Restart the macOS app after editing its Backend URL in History & Settings.
+Restart the macOS app after editing its Backend URL in Settings.
 The Mac app automatically removes a saved `voiceprompt.invalid` placeholder so it
 cannot override a newly configured build. Deliberately configured custom URLs are
 preserved.
@@ -220,21 +220,23 @@ open "$HOME/Applications/VoicePromptMac.app"
 ```
 
 VoicePrompt runs in the **menu bar**, not the Dock. Click its icon and choose
-**History & Settings** to open the app window. Installation and launch work without
+**Settings...** to open the separate settings window in front of other windows.
+The menu itself lists all loaded transcripts from the last 48 hours, newest first.
+Installation and launch work without
 backend configuration, but the app remains **Offline**: sign-in, transcript sync,
 and automatic clipboard delivery require the backend and Entra setup above.
 The Mac app receives transcripts; recording is handled by the iOS app.
 
 Sign in with Microsoft **on the Mac as well as on iOS**; each app uses its own
-client registration and Keychain. History & Settings shows the Microsoft login,
+client registration and Keychain. Settings shows the Microsoft login,
 API connection, live-update connection, and any actionable errors separately.
 The app refreshes history after sign-in and WebSocket reconnects, and polls every
 minute to recover missed completion events. A WebSocket outage does not prevent
 API history refresh. **Sync Now** refreshes immediately.
 
-Click anywhere on a history record to copy that record's **full Markdown** to the
-clipboard, including text beyond the three-line preview. The row briefly shows
-**Copied**. Older records and repeated clicks can be copied again; automatic
+Click a transcript directly in the menu to copy that record's **full Markdown** to
+the clipboard, including text beyond its shortened, single-line preview. Each
+entry includes its creation date and time. Older records and repeated clicks can be copied again; automatic
 delivery deduplication does not disable manual copying.
 
 After changing app configuration or updating source, rebuild and replace the

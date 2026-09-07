@@ -203,6 +203,32 @@ struct CompletionSynchronizerTests {
         #expect(pasteboard.string(forType: .html) == nil)
     }
 
+    @Test func menuPreviewIsSingleLineAndBoundedWithoutChangingTheTranscript() {
+        #expect(TranscriptMenuItem.preview("# Heading\n\nFirst\tsecond") == "# Heading First second")
+        #expect(TranscriptMenuItem.preview(" \n\t") == "Empty transcript")
+        let longText = String(repeating: "a", count: 100)
+        #expect(TranscriptMenuItem.preview(longText) == String(repeating: "a", count: 80) + "...")
+        #expect(TranscriptMenuItem.preview(String(repeating: "b", count: 80)).count == 80)
+    }
+
+    @Test func settingsReopensTheSameFocusableWindow() throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let controller = SettingsWindowController()
+        controller.show(synchronizer: h.sync)
+        let window = try #require(controller.window)
+        defer { window.close() }
+        #expect(window.isVisible)
+        #expect(window.canBecomeKey)
+        #expect(window.title == "VoicePrompt Settings")
+        window.close()
+        #expect(!window.isVisible)
+        controller.show(synchronizer: h.sync)
+        #expect(controller.window === window)
+        #expect(window.isVisible)
+        #expect(window.canBecomeKey)
+    }
+
     @Test func failedTranscriptDownloadPreservesHistoryAndSurfacesFailure() async {
         let h = harness()
         defer { h.defaults.removePersistentDomain(forName: h.suite) }

@@ -4,6 +4,7 @@ import VoicePromptKit
 @main
 struct VoicePromptMacApp: App {
     @StateObject private var synchronizer: CompletionSynchronizer
+    @StateObject private var settingsWindow = SettingsWindowController()
 
     init() {
         let baseURL = URL(string: BackendConfiguration.resolve(
@@ -35,20 +36,28 @@ struct VoicePromptMacApp: App {
     var body: some Scene {
         MenuBarExtra("VoicePrompt", image: "MenuBarIcon") {
             Text(synchronizer.status)
+            Divider()
+            Text("Last 48 Hours")
+            if synchronizer.history.isEmpty {
+                Text(synchronizer.isSignedIn ? "No transcripts yet" : "Sign in to see your transcripts")
+            }
+            ForEach(synchronizer.history) { transcript in
+                TranscriptMenuItem(transcript: transcript) {
+                    synchronizer.copy(transcript)
+                }
+            }
+            Divider()
             if !synchronizer.isSignedIn {
                 Button("Sign in with Microsoft") { Task { await synchronizer.signIn() } }
                     .disabled(synchronizer.isSigningIn)
             }
             Button("Sync Now") { Task { await synchronizer.reconcile() } }
                 .disabled(synchronizer.isSyncing || synchronizer.isSigningIn)
-            SettingsLink { Text("History & Settings") }
+            Button("Settings...") { settingsWindow.show(synchronizer: synchronizer) }
+                .keyboardShortcut(",")
             Divider()
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
         .menuBarExtraStyle(.menu)
-
-        Settings {
-            HistoryView(synchronizer: synchronizer)
-        }
     }
 }
