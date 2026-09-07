@@ -186,6 +186,12 @@ The shared Swift package requires Swift 6.3 or newer. CI uses Xcode 26.5 on macO
 
 ### Local Mac installation
 
+For updates with an existing `Apple/Configuration.xcconfig`, quit VoicePrompt from
+its menu-bar menu and run `./scripts/install-macos.sh` from the repository root.
+The script regenerates the Xcode project, builds with local ad-hoc signing, replaces
+`~/Applications/VoicePromptMac.app`, and launches it without deleting preferences or
+Keychain credentials. Build products stay in `~/Library/Developer/Xcode/DerivedData/VoicePrompt`.
+
 Use macOS 14 or later, Xcode with Swift 6.3 or later, and XcodeGen
 (`brew install xcodegen` if it is missing). A local, ad-hoc-signed build does not
 require a paid Apple Developer account or notarization.
