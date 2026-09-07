@@ -33,3 +33,11 @@ resource "azurerm_role_assignment" "registry" {
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.workload.principal_id
 }
+
+resource "azurerm_role_assignment" "speech" {
+  count = var.foundry_resource_id == "" ? 0 : 1
+
+  scope                = var.foundry_resource_id
+  role_definition_name = "Cognitive Services Speech User"
+  principal_id         = azurerm_user_assigned_identity.workload.principal_id
+}

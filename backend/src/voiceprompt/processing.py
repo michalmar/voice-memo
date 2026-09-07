@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol
@@ -6,7 +7,9 @@ from uuid import UUID
 
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
+from pydantic import BaseModel, Field
 
+from .audio import to_speech_wav
 from .config import Settings
 from .models import SessionStatus
 from .repository import Repository
@@ -22,6 +25,14 @@ class RefinementClient(Protocol):
     async def refine(self, transcript: str) -> str: ...
 
 
+class CombinedPhrase(BaseModel):
+    text: str
+
+
+class SpeechTranscription(BaseModel):
+    combined_phrases: list[CombinedPhrase] = Field(alias="combinedPhrases")
+
+
 class FoundryClient:
     def __init__(self, settings: Settings, credential: AsyncTokenCredential) -> None:
         self.settings = settings
@@ -32,23 +43,34 @@ class FoundryClient:
         return {"Authorization": "Bearer " + token.token}
 
     async def transcribe(self, audio: bytes, locale: str, context: str | None) -> str:
-        prompt = ", ".join(self.settings.technical_glossary)
-        if context:
-            prompt += f". Previous context: {context[-800:]}"
-        url = (
-            f"{self.settings.foundry_endpoint.rstrip('/')}/openai/deployments/"
-            f"{self.settings.speech_deployment}/audio/transcriptions"
-        )
+        # Keep the session API compatible, but let Speech identify the audio language.
+        # Speech supports phrase hints, not the previous OpenAI free-form context prompt.
+        del locale, context
+        if not self.settings.speech_endpoint:
+            raise ValueError("VOICEPROMPT_SPEECH_ENDPOINT must be the Foundry resource's custom Speech endpoint")
+        wav = await to_speech_wav(audio)
+        definition = {
+            "enhancedMode": {
+                "enabled": True,
+                "model": self.settings.speech_model,
+                "modelOptions": {"transcribeStyle": "verbatim"},
+            },
+            "phraseList": {"phrases": self.settings.technical_glossary},
+        }
+        url = f"{self.settings.speech_endpoint.rstrip('/')}/speechtotext/transcriptions:transcribe"
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 url,
-                params={"api-version": self.settings.foundry_api_version},
+                params={"api-version": self.settings.speech_api_version},
                 headers=await self._headers(),
-                files={"file": ("segment.m4a", audio, "audio/mp4")},
-                data={"language": locale.split("-")[0], "prompt": prompt},
+                files={
+                    "audio": ("segment.wav", wav, "audio/wav"),
+                    "definition": (None, json.dumps(definition), "application/json"),
+                },
             )
             response.raise_for_status()
-            return response.json()["text"].strip()
+            result = SpeechTranscription.model_validate(response.json())
+            return " ".join(phrase.text.strip() for phrase in result.combined_phrases if phrase.text.strip())
 
     async def refine(self, transcript: str) -> str:
         system = (

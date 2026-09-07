@@ -1,5 +1,7 @@
 import hashlib
 import json
+from email.parser import BytesParser
+from email.policy import default
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -24,6 +26,103 @@ class FakeModels:
 
     async def refine(self, transcript: str) -> str:
         return f"# Prompt\n\n{transcript}"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locale", ["cs-CZ", "en-US", "de-DE"])
+async def test_mai_transcribe_uses_speech_rest_with_entra_and_wav(monkeypatch, locale):
+    settings = Settings(
+        environment="test",
+        speech_endpoint="https://example.cognitiveservices.azure.com/",
+        technical_glossary=["Azure", "GitHub Copilot"],
+    )
+    credential = AsyncMock(spec=AsyncTokenCredential)
+    credential.get_token.return_value = AccessToken("test-token", 9999999999)
+    convert = AsyncMock(return_value=b"RIFF-WAV-audio")
+    monkeypatch.setattr("voiceprompt.processing.to_speech_wav", convert)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == (
+            "https://example.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe"
+            "?api-version=2025-10-15"
+        )
+        assert request.headers["Authorization"] == "Bearer test-token"
+        assert "Ocp-Apim-Subscription-Key" not in request.headers
+        message = BytesParser(policy=default).parsebytes(
+            f"Content-Type: {request.headers['Content-Type']}\r\n\r\n".encode() + request.content
+        )
+        parts = {part.get_param("name", header="Content-Disposition"): part for part in message.iter_parts()}
+        assert set(parts) == {"audio", "definition"}
+        assert parts["audio"].get_filename() == "segment.wav"
+        assert parts["audio"].get_content_type() == "audio/wav"
+        assert parts["audio"].get_payload(decode=True) == b"RIFF-WAV-audio"
+        definition = json.loads(parts["definition"].get_payload(decode=True))
+        assert "locales" not in definition
+        assert definition == {
+            "enhancedMode": {
+                "enabled": True, "model": "MAI-Transcribe-2",
+                "modelOptions": {"transcribeStyle": "verbatim"},
+            },
+            "phraseList": {"phrases": ["Azure", "GitHub Copilot"]},
+        }
+        return httpx.Response(200, json={
+            "combinedPhrases": [{"text": " Pouzij Azure. "}, {"text": "Potom GitHub Copilot.\n"}],
+            "phrases": [{"text": "Do not duplicate individual phrases."}],
+        })
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr("voiceprompt.processing.httpx.AsyncClient", lambda **kwargs: http_client)
+    result = await FoundryClient(settings, credential).transcribe(b"m4a-input", locale, "previous segment")
+    assert result == "Pouzij Azure. Potom GitHub Copilot."
+    convert.assert_awaited_once_with(b"m4a-input")
+    credential.get_token.assert_awaited_once_with("https://cognitiveservices.azure.com/.default")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"text": "old OpenAI response"}, {"combinedPhrases": [{}]}])
+async def test_mai_transcribe_rejects_malformed_success_response(monkeypatch, payload):
+    settings = Settings(environment="test", speech_endpoint="https://example.cognitiveservices.azure.com")
+    credential = AsyncMock(spec=AsyncTokenCredential)
+    credential.get_token.return_value = AccessToken("test-token", 9999999999)
+    monkeypatch.setattr("voiceprompt.processing.to_speech_wav", AsyncMock(return_value=b"wav"))
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)))
+    monkeypatch.setattr("voiceprompt.processing.httpx.AsyncClient", lambda **kwargs: http_client)
+    with pytest.raises(ValidationError):
+        await FoundryClient(settings, credential).transcribe(b"audio", "cs-CZ", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 429, 500])
+async def test_mai_transcribe_propagates_http_failures(monkeypatch, status):
+    settings = Settings(environment="test", speech_endpoint="https://example.cognitiveservices.azure.com")
+    credential = AsyncMock(spec=AsyncTokenCredential)
+    credential.get_token.return_value = AccessToken("test-token", 9999999999)
+    monkeypatch.setattr("voiceprompt.processing.to_speech_wav", AsyncMock(return_value=b"wav"))
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(status)))
+    monkeypatch.setattr("voiceprompt.processing.httpx.AsyncClient", lambda **kwargs: http_client)
+    with pytest.raises(httpx.HTTPStatusError) as error:
+        await FoundryClient(settings, credential).transcribe(b"audio", "cs-CZ", None)
+    assert error.value.response.status_code == status
+
+
+@pytest.mark.asyncio
+async def test_mai_transcribe_accepts_empty_speech_result(monkeypatch):
+    settings = Settings(environment="test", speech_endpoint="https://example.cognitiveservices.azure.com")
+    credential = AsyncMock(spec=AsyncTokenCredential)
+    credential.get_token.return_value = AccessToken("test-token", 9999999999)
+    monkeypatch.setattr("voiceprompt.processing.to_speech_wav", AsyncMock(return_value=b"wav"))
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"combinedPhrases": []})
+    ))
+    monkeypatch.setattr("voiceprompt.processing.httpx.AsyncClient", lambda **kwargs: http_client)
+    assert await FoundryClient(settings, credential).transcribe(b"audio", "cs-CZ", None) == ""
+
+
+@pytest.mark.asyncio
+async def test_mai_transcribe_requires_explicit_speech_endpoint():
+    credential = AsyncMock(spec=AsyncTokenCredential)
+    with pytest.raises(ValueError, match="VOICEPROMPT_SPEECH_ENDPOINT"):
+        await FoundryClient(Settings(environment="test"), credential).transcribe(b"audio", "cs-CZ", None)
+    credential.get_token.assert_not_awaited()
 
 
 @pytest.mark.asyncio

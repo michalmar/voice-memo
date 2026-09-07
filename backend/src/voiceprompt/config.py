@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     max_segments: int = 120
     transcript_ttl_hours: int = 48
     foundry_endpoint: str = ""
-    speech_deployment: str = ""
+    speech_endpoint: str = ""
+    speech_model: str = "MAI-Transcribe-2"
+    speech_api_version: str = "2025-10-15"
     cleanup_deployment: str = "gpt-5.6-luna"
     cleanup_temperature: float | None = Field(default=None, ge=0, le=2)
     foundry_api_version: str = "2025-04-01-preview"

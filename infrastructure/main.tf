@@ -228,7 +228,9 @@ locals {
     { name = "VOICEPROMPT_ENTRA_REQUIRED_SCOPE", value = var.entra_required_scope },
     { name = "VOICEPROMPT_ALLOWED_ENTRA_OBJECT_IDS", value = join(",", var.allowed_entra_object_ids) },
     { name = "VOICEPROMPT_FOUNDRY_ENDPOINT", value = var.foundry_endpoint },
-    { name = "VOICEPROMPT_SPEECH_DEPLOYMENT", value = var.speech_deployment },
+    { name = "VOICEPROMPT_SPEECH_ENDPOINT", value = var.speech_endpoint },
+    { name = "VOICEPROMPT_SPEECH_MODEL", value = var.speech_model },
+    { name = "VOICEPROMPT_SPEECH_API_VERSION", value = var.speech_api_version },
     { name = "VOICEPROMPT_CLEANUP_DEPLOYMENT", value = var.cleanup_deployment },
     { name = "VOICEPROMPT_WEB_PUBSUB_ENDPOINT", value = "https://${azurerm_web_pubsub.main.hostname}" },
     { name = "APPLICATIONINSIGHTS_CONNECTION_STRING", value = azurerm_application_insights.main.connection_string },
@@ -335,6 +337,7 @@ resource "azurerm_container_app_job" "worker" {
     azurerm_role_assignment.registry,
     azurerm_role_assignment.storage,
     azurerm_role_assignment.foundry,
+    azurerm_role_assignment.speech,
     azurerm_role_assignment.web_pubsub,
     azurerm_private_endpoint.storage,
     azapi_resource.tables,
@@ -364,7 +367,7 @@ resource "azurerm_container_app_job" "worker" {
   template {
     container {
       name    = "worker"
-      image   = var.container_image
+      image   = coalesce(var.worker_container_image, var.container_image)
       command = ["python", "-m", "voiceprompt.worker"]
       cpu     = 0.5
       memory  = "1Gi"

@@ -20,6 +20,12 @@ variable "container_image" {
   description = "Immutable backend image reference."
 }
 
+variable "worker_container_image" {
+  type        = string
+  default     = null
+  description = "Optional immutable worker-only image override; null uses container_image."
+}
+
 variable "entra_tenant_id" {
   type        = string
   description = "Microsoft Entra tenant ID."
@@ -55,10 +61,22 @@ variable "foundry_resource_id" {
   description = "Resource ID of the existing Microsoft Foundry account used for RBAC."
 }
 
-variable "speech_deployment" {
+variable "speech_endpoint" {
   type        = string
   default     = ""
-  description = "Existing speech-capable deployment name selected after evaluation."
+  description = "Custom Speech endpoint of the existing Foundry account, https://<resource>.cognitiveservices.azure.com."
+}
+
+variable "speech_model" {
+  type        = string
+  default     = "MAI-Transcribe-2"
+  description = "Speech enhancedMode model identifier, not an OpenAI deployment name."
+}
+
+variable "speech_api_version" {
+  type        = string
+  default     = "2025-10-15"
+  description = "Speech fast transcription REST API version."
 }
 
 variable "cleanup_deployment" {

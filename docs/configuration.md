@@ -48,11 +48,9 @@ allowing a second account does not share or merge either account's history.
 
 ## Azure and Foundry
 
-Authenticate Azure CLI, identify an existing Foundry resource, and list its
-deployments. Evaluate speech-capable deployments with a representative Czech
-technical recording; set `speech_deployment` to the winner. Evaluate the existing
-GPT-5.6 Luna deployment first for detailed intent preservation and change
-`cleanup_deployment` to GPT-5.6 Terra only if it fails.
+Authenticate Azure CLI and identify the existing Foundry resource. Transcription
+uses **MAI-Transcribe-2** through the Speech fast transcription REST API. Markdown
+cleanup remains on the existing `cleanup_deployment` (default `gpt-5.6-luna`).
 
 The guide assumes those model deployments already exist; their names are not a
 guarantee of availability in your subscription. If no Foundry resource exists,
@@ -62,9 +60,91 @@ available in an editor or Copilot is not automatically an Azure deployment.
 Set `foundry_endpoint` to the account's Azure OpenAI endpoint, such as
 `https://<account>.openai.azure.com`, not the Foundry project URL ending in
 `/api/projects/<project>`. Set `foundry_resource_id` to the parent account's Azure
-resource ID, not the project ID. The current backend uses this one endpoint for
-both deployments. A Realtime-only deployment cannot replace the file-transcription
-deployment used for recorded M4A segments.
+resource ID, not the project ID. This endpoint is used only for Markdown cleanup.
+
+Set `speech_endpoint` to the **same resource's custom Speech subdomain**, such as
+`https://<account>.cognitiveservices.azure.com`, and `speech_model` to
+`MAI-Transcribe-2`. This is a Speech model identifier, not an OpenAI deployment
+name. The worker posts multipart `audio` and JSON `definition` fields to
+`/speechtotext/transcriptions:transcribe?api-version=2025-10-15`, with
+`enhancedMode.enabled=true` and `enhancedMode.model=MAI-Transcribe-2`.
+`speech_api_version` controls this version separately from cleanup's OpenAI API.
+
+The worker's user-assigned managed identity (selected by `AZURE_CLIENT_ID`) needs
+**Cognitive Services Speech User** at `foundry_resource_id`. Terraform grants this
+in addition to **Cognitive Services OpenAI User**, which remains necessary for
+cleanup but does not authorize Speech transcription. Requests use a raw
+`Authorization: Bearer <token>` header with the token scope
+`https://cognitiveservices.azure.com/.default`. No Speech keys, client secrets,
+or `aad#resource-id#token` SDK wrapper are used.
+
+iOS continues uploading AAC/M4A. The worker converts each segment to 16 kHz mono
+PCM WAV using FFmpeg because the MAI-specific documentation lists WAV, MP3, and
+FLAC inputs. Conversion uses temporary files that are removed afterward and a
+30-second deadline. The backend image includes FFmpeg; install it locally when
+running the worker or audio tests outside Docker. Transcription uses **automatic
+language identification**: the Speech request omits `locales`, even when an older
+Apple app sends the default `cs-CZ` session metadata. The technical glossary becomes
+`phraseList.phrases`. MAI uses verbatim output so the unchanged Markdown cleanup
+step preserves intent. The old OpenAI previous-segment prompt has no equivalent
+in this Speech request and is not sent. Full text comes from
+`combinedPhrases[].text`, not the duplicated per-segment `phrases` array.
+
+**Migration:** replace `speech_deployment` / `VOICEPROMPT_SPEECH_DEPLOYMENT` with
+`speech_endpoint` / `VOICEPROMPT_SPEECH_ENDPOINT`, and optionally set
+`speech_model` / `VOICEPROMPT_SPEECH_MODEL` and
+`speech_api_version` / `VOICEPROMPT_SPEECH_API_VERSION` to override their defaults.
+Rebuild and deploy the worker image. `worker_container_image` can pin a worker-only
+immutable image without restarting the API or retention-cleanup job; when null it
+uses the shared `container_image`. Apple apps do not need rebuilding.
+
+MAI-Transcribe-2 is **public preview**, without a production SLA. Check the current
+[MAI instructions](https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe?pivots=programming-language-rest),
+[Speech RBAC guidance](https://learn.microsoft.com/azure/ai-services/speech-service/role-based-access-control),
+and [region table](https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=llmspeech).
+As of September 7, 2026, the table did not list Sweden Central for MAI, but a live
+managed-identity request explicitly selecting MAI-Transcribe-2 succeeded on this
+deployment's existing `demo-swe` account. Validate availability on the actual
+resource before switching a worker; do not infer it from ordinary Fast
+Transcription region support.
+
+### Managed-identity sample call
+
+Run this on an Azure host with the workload identity attached, using a sample
+WAV file. `AZURE_CLIENT_ID` selects the user-assigned identity and
+`VOICEPROMPT_SPEECH_ENDPOINT` must contain the resource's custom Speech endpoint.
+Managed identity is not available directly on a local Mac.
+
+```python
+import asyncio
+import json
+import os
+from pathlib import Path
+
+import httpx
+from azure.identity.aio import ManagedIdentityCredential
+
+async def main():
+    async with ManagedIdentityCredential(client_id=os.environ["AZURE_CLIENT_ID"]) as credential:
+        token = await credential.get_token("https://cognitiveservices.azure.com/.default")
+        endpoint = os.environ["VOICEPROMPT_SPEECH_ENDPOINT"].rstrip("/")
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{endpoint}/speechtotext/transcriptions:transcribe",
+                params={"api-version": "2025-10-15"},
+                headers={"Authorization": "Bearer " + token.token},
+                files={
+                    "audio": ("sample.wav", Path("sample.wav").read_bytes(), "audio/wav"),
+                    "definition": (None, json.dumps({
+                        "enhancedMode": {"enabled": True, "model": "MAI-Transcribe-2"},
+                    }), "application/json"),
+                },
+            )
+            response.raise_for_status()
+            print(" ".join(item["text"] for item in response.json()["combinedPhrases"]))
+
+asyncio.run(main())
+```
 
 Cleanup requests omit `temperature` by default because GPT-5.6 Luna rejects a
 zero-temperature override. For a model supporting sampling controls, optionally

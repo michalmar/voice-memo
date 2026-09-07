@@ -6,5 +6,6 @@ entra_required_scope    = "VoicePrompt.Access"
 allowed_entra_object_ids = ["00000000-0000-0000-0000-000000000000"]
 foundry_endpoint        = "https://replace-with-existing-foundry-resource.openai.azure.com"
 foundry_resource_id     = "/subscriptions/replace/resourceGroups/replace/providers/Microsoft.CognitiveServices/accounts/replace"
-speech_deployment       = "replace-with-evaluated-speech-deployment"
+speech_endpoint         = "https://replace-with-existing-foundry-resource.cognitiveservices.azure.com"
+speech_model            = "MAI-Transcribe-2"
 cleanup_deployment      = "gpt-5.6-luna"
