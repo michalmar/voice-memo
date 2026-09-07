@@ -43,6 +43,8 @@ final class CompletionSynchronizer: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var liveConnected = false
     @Published private(set) var liveError: String?
+    @Published private(set) var deletingTranscriptIDs: Set<UUID> = []
+    @Published private(set) var deletionError: String?
     private let client: APIClient
     private let credentials: any CredentialProvider
     private let events: any CompletionEventStreaming
@@ -54,6 +56,8 @@ final class CompletionSynchronizer: ObservableObject {
     private let pollInterval: Duration
     private let logger = Logger(subsystem: "com.michalmar.voiceprompt.macos", category: "Sync")
     private var copied: Set<UUID>
+    // Ignore stale reads and completion events that were in flight during deletion.
+    private var deletedTranscriptIDs: Set<UUID> = []
     private var generation = 0
     private var starting = false
     private var pollTask: Task<Void, Never>?
@@ -147,6 +151,9 @@ final class CompletionSynchronizer: ObservableObject {
         await stopMonitoring()
         await signOutAction()
         history = []
+        deletingTranscriptIDs = []
+        deletedTranscriptIDs = []
+        deletionError = nil
         connected = false
         isSignedIn = false
         lastError = nil
@@ -173,18 +180,28 @@ final class CompletionSynchronizer: ObservableObject {
             isSignedIn = true
             let summaries = try await client.transcripts()
             let cutoff = Date().addingTimeInterval(-48 * 60 * 60)
-            let fetched: [Transcript] = try await withThrowingTaskGroup(of: Transcript.self) { group in
+            let fetched: [Transcript] = try await withThrowingTaskGroup(of: Transcript?.self) { group in
                 for item in summaries where item.createdAt >= cutoff {
-                    group.addTask { try await self.client.transcript(id: item.id) }
+                    group.addTask {
+                        do { return try await self.client.transcript(id: item.id) }
+                        catch APIClient.Error.server(status: 404, detail: _) {
+                            // Another device can delete a transcript after it was listed.
+                            return nil
+                        }
+                    }
                 }
-                return try await group.reduce(into: [Transcript]()) { $0.append($1) }
+                return try await group.reduce(into: [Transcript]()) { result, item in
+                    if let item { result.append(item) }
+                }
             }
             guard generation == current, !Task.isCancelled else { return }
-            history = fetched.sorted { $0.createdAt > $1.createdAt }
+            history = fetched.filter { !deletedTranscriptIDs.contains($0.id) }
+                .sorted { $0.createdAt > $1.createdAt }
             copied = copied.intersection(Set(history.map(\.id)))
             connected = true
             lastError = nil
-            if automaticallyCopyNewest, let newest = history.first, !copied.contains(newest.id) {
+            if automaticallyCopyNewest, let newest = history.first,
+               !copied.contains(newest.id), !deletingTranscriptIDs.contains(newest.id) {
                 copy(newest)
                 await notifications.completed()
             }
@@ -202,12 +219,43 @@ final class CompletionSynchronizer: ObservableObject {
         defaults.set(copied.map(\.uuidString), forKey: "copiedTranscriptIDs")
     }
 
+    func delete(_ transcript: Transcript) async {
+        guard !deletingTranscriptIDs.contains(transcript.id) else { return }
+        let current = generation
+        deletingTranscriptIDs.insert(transcript.id)
+        deletionError = nil
+        defer {
+            if generation == current { deletingTranscriptIDs.remove(transcript.id) }
+        }
+        do {
+            do { try await client.deleteTranscript(id: transcript.id) }
+            catch APIClient.Error.server(status: 404, detail: _) {
+                // Already deleted (or expired) is the same requested end state.
+            }
+            guard generation == current else { return }
+            deletedTranscriptIDs.insert(transcript.id)
+            history.removeAll { $0.id == transcript.id }
+            copied.remove(transcript.id)
+            defaults.set(copied.map(\.uuidString), forKey: "copiedTranscriptIDs")
+        } catch {
+            guard generation == current else { return }
+            deletionError = "Could not delete the cloud transcript: \(error.localizedDescription) Retry using its trash button."
+            report(error)
+        }
+    }
+
+    func dismissDeletionError() {
+        deletionError = nil
+    }
+
     func receiveCompletion(id: UUID) async {
-        guard isSignedIn, !copied.contains(id) else { return }
+        guard isSignedIn, !copied.contains(id),
+              !deletedTranscriptIDs.contains(id), !deletingTranscriptIDs.contains(id) else { return }
         let current = generation
         do {
             let transcript = try await client.transcript(id: id)
-            guard generation == current, !copied.contains(id), !Task.isCancelled else { return }
+            guard generation == current, !copied.contains(id), !Task.isCancelled,
+                  !deletedTranscriptIDs.contains(id), !deletingTranscriptIDs.contains(id) else { return }
             history.removeAll { $0.id == id }
             history.append(transcript)
             history.sort { $0.createdAt > $1.createdAt }
@@ -216,6 +264,9 @@ final class CompletionSynchronizer: ObservableObject {
             copy(transcript)
             await notifications.completed()
         } catch is CancellationError {
+            return
+        } catch APIClient.Error.server(status: 404, detail: _) {
+            // Completion notifications can arrive after cloud deletion or expiry.
             return
         } catch {
             guard generation == current, !Task.isCancelled else { return }

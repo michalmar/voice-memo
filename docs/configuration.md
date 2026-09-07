@@ -221,7 +221,8 @@ open "$HOME/Applications/VoicePromptMac.app"
 
 VoicePrompt runs in the **menu bar**, not the Dock. Click its icon and choose
 **Settings...** to open the separate settings window in front of other windows.
-The menu itself lists all loaded transcripts from the last 48 hours, newest first.
+The scrollable panel under the icon lists all loaded transcripts from the last
+48 hours, newest first.
 Installation and launch work without
 backend configuration, but the app remains **Offline**: sign-in, transcript sync,
 and automatic clipboard delivery require the backend and Entra setup above.
@@ -234,10 +235,22 @@ The app refreshes history after sign-in and WebSocket reconnects, and polls ever
 minute to recover missed completion events. A WebSocket outage does not prevent
 API history refresh. **Sync Now** refreshes immediately.
 
-Click a transcript directly in the menu to copy that record's **full Markdown** to
-the clipboard, including text beyond its shortened, single-line preview. Each
-entry includes its creation date and time. Older records and repeated clicks can be copied again; automatic
-delivery deduplication does not disable manual copying.
+Click a transcript row to copy that record's **full Markdown** to the clipboard,
+including text beyond its shortened preview. Each entry includes its creation
+date and time and briefly shows **Copied**. Older records and repeated clicks can
+be copied again; automatic delivery deduplication does not disable manual copying.
+
+The separate **trash button** on each row immediately starts cloud deletion without
+a confirmation dialog. This action cannot be undone.
+This calls the existing authenticated `DELETE /v1/transcripts/{transcript_id}`
+endpoint: it permanently removes the signed-in user's cloud transcript, not just
+the local row. Other Macs using the same account remove it on their next sync.
+The row remains visible while deletion is pending; failures show an error and allow
+retry. A record that was already deleted or expired is removed locally as well.
+Deletion does not clear text already copied to the clipboard or copies saved
+elsewhere. It removes the transcript, not the recording session's operational
+metadata; normal processing already deletes uploaded audio and intermediate text.
+No backend deployment or new permissions are needed for this client feature.
 
 After changing app configuration or updating source, rebuild and replace the
 installed app as above: launching an older copy does not pick up new Info.plist

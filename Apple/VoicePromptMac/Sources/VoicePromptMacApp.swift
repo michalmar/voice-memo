@@ -35,29 +35,10 @@ struct VoicePromptMacApp: App {
 
     var body: some Scene {
         MenuBarExtra("VoicePrompt", image: "MenuBarIcon") {
-            Text(synchronizer.status)
-            Divider()
-            Text("Last 48 Hours")
-            if synchronizer.history.isEmpty {
-                Text(synchronizer.isSignedIn ? "No transcripts yet" : "Sign in to see your transcripts")
+            HistoryMenuView(synchronizer: synchronizer) {
+                settingsWindow.show(synchronizer: synchronizer)
             }
-            ForEach(synchronizer.history) { transcript in
-                TranscriptMenuItem(transcript: transcript) {
-                    synchronizer.copy(transcript)
-                }
-            }
-            Divider()
-            if !synchronizer.isSignedIn {
-                Button("Sign in with Microsoft") { Task { await synchronizer.signIn() } }
-                    .disabled(synchronizer.isSigningIn)
-            }
-            Button("Sync Now") { Task { await synchronizer.reconcile() } }
-                .disabled(synchronizer.isSyncing || synchronizer.isSigningIn)
-            Button("Settings...") { settingsWindow.show(synchronizer: synchronizer) }
-                .keyboardShortcut(",")
-            Divider()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
     }
 }

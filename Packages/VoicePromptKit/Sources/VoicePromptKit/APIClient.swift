@@ -89,6 +89,10 @@ public actor APIClient {
         try await send(path: "v1/transcripts/\(id)")
     }
 
+    public func deleteTranscript(id: UUID) async throws {
+        _ = try await request(path: "v1/transcripts/\(id)", method: "DELETE")
+    }
+
     public func eventToken() async throws -> EventToken {
         try await send(path: "v1/events/token", method: "POST", body: Data())
     }
@@ -99,6 +103,16 @@ public actor APIClient {
         body: Data? = nil,
         headers: [String: String] = [:]
     ) async throws -> T {
+        let data = try await request(path: path, method: method, body: body, headers: headers)
+        return try decoder.decode(T.self, from: data)
+    }
+
+    private func request(
+        path: String,
+        method: String,
+        body: Data? = nil,
+        headers: [String: String] = [:]
+    ) async throws -> Data {
         let token = try await credentials.accessToken()
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
@@ -117,7 +131,7 @@ public actor APIClient {
                 ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
             throw Error.server(status: http.statusCode, detail: detail)
         }
-        return try decoder.decode(T.self, from: data)
+        return data
     }
 }
 

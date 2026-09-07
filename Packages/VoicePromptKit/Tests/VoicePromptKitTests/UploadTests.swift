@@ -15,6 +15,35 @@ struct UploadTests {
         APIClient(baseURL: URL(string: "https://voiceprompt.test/")!, credentials: TestCredentials(), session: HTTPStub.session())
     }
 
+    @Test func deleteTranscriptAcceptsEmpty204AndUsesAuthenticatedDelete() async throws {
+        let id = UUID()
+        HTTPStub.shared.configure([(204, "")])
+        try await client().deleteTranscript(id: id)
+        let request = try #require(HTTPStub.shared.recordedRequests.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.path == "/v1/transcripts/\(id)")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
+        #expect(request.httpBody == nil)
+        #expect(request.timeoutInterval == 30)
+    }
+
+    @Test func deleteTranscriptPropagatesServerAndNetworkFailures() async throws {
+        for status in [401, 403, 404, 500] {
+            HTTPStub.shared.configure([(status, "{\"detail\":\"Cannot delete\"}")])
+            do {
+                try await client().deleteTranscript(id: UUID())
+                Issue.record("Expected deletion failure for HTTP \(status)")
+            } catch APIClient.Error.server(let actualStatus, let detail) {
+                #expect(actualStatus == status)
+                #expect(detail == "Cannot delete")
+            }
+        }
+        HTTPStub.shared.configure([(0, "")])
+        await #expect(throws: URLError.self) {
+            try await client().deleteTranscript(id: UUID())
+        }
+    }
+
     private func chunk(directory: URL, id: UUID = UUID(), sequence: Int = 0) throws -> ChunkMetadata {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let file = directory.appending(path: String(format: "%06d.m4a", sequence))
