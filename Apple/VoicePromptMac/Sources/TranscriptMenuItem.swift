@@ -7,6 +7,10 @@ struct TranscriptMenuItem: View {
     let copy: () -> Void
     let delete: () -> Void
     @State private var copied = false
+    @State private var isHovered = false
+
+    private var isHighlighted: Bool { isHovered && !isDeleting }
+    private var highlightedText: Color { Color(nsColor: .selectedMenuItemTextColor) }
 
     static func preview(_ markdown: String) -> String {
         let text = markdown.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -24,15 +28,16 @@ struct TranscriptMenuItem: View {
                     Text(verbatim: Self.preview(transcript.markdown))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
+                        .foregroundStyle(isHighlighted ? highlightedText : .primary)
                     HStack {
                         Text(transcript.createdAt.formatted(date: .abbreviated, time: .shortened))
                         if copied {
                             Label("Copied", systemImage: "checkmark")
-                                .foregroundStyle(.green)
+                                .foregroundStyle(isHighlighted ? highlightedText : .green)
                         }
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isHighlighted ? highlightedText : .secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 8)
@@ -56,11 +61,20 @@ struct TranscriptMenuItem: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
+                .foregroundStyle(isHighlighted ? highlightedText : .red)
                 .accessibilityLabel("Delete cloud transcript")
                 .accessibilityIdentifier("history-delete-\(transcript.id)")
                 .help("Delete this transcript from cloud history")
             }
         }
+        .padding(.horizontal, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isHighlighted ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onDisappear { isHovered = false }
         .task(id: copied) {
             guard copied else { return }
             do { try await Task.sleep(for: .seconds(2)) }
