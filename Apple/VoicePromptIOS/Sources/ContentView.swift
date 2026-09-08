@@ -68,7 +68,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, minHeight: 64)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.orange)
+                .tint(model.state == .recording ? .red : .orange)
                 .disabled(model.state != .recording && !model.canStartRecording)
                 .accessibilityHint("Double tap to start or stop continuous recording")
 
