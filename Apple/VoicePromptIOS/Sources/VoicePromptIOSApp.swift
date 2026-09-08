@@ -49,7 +49,10 @@ struct VoicePromptIOSApp: App {
                 ContentView(model: model)
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
-                            Task { await model.restoreAuthentication() }
+                            Task {
+                                await model.restoreAuthentication()
+                                await model.transcriptLibrary.refresh()
+                            }
                         }
                     }
             case .failure(let error):

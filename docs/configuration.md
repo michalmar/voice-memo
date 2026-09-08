@@ -46,6 +46,23 @@ Contributor, storage access, or directory administrator roles. Sign in with the
 **same Microsoft account on iPhone and Mac** to synchronize that account's records;
 allowing a second account does not share or merge either account's history.
 
+## iOS transcripts
+
+The Record tab displays the final cleaned-up Markdown after cloud processing.
+Select text, use **Copy** for the entire transcript, or use **Share** to send it
+to another app. The **History** tab lists the signed-in account's transcripts,
+newest first; tap a record to open it. Pull to refresh or use the refresh button.
+History also refreshes when the app returns to the foreground.
+**Delete**, beside Share, immediately deletes the cloud transcript without a
+confirmation dialog, matching the Mac app. Failed deletions display an error and
+can be retried. This removes the record from both devices after syncing, but does
+not remove text already copied or shared.
+
+This uses the same authenticated transcript endpoints as the Mac app, with no
+backend changes. Cloud history expires after 48 hours. The iOS app only keeps
+downloaded text in memory and clears it on sign-out; copy or share anything you
+want to retain. Records deleted on the Mac disappear from iOS after refreshing.
+
 ## Azure and Foundry
 
 Authenticate Azure CLI and identify the existing Foundry resource. Transcription

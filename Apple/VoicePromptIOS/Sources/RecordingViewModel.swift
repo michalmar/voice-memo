@@ -27,7 +27,9 @@ final class RecordingViewModel: ObservableObject {
     }
 
     @Published private(set) var state: State = .ready
-    @Published private(set) var authenticationState: AuthenticationState = .checking
+    @Published private(set) var authenticationState: AuthenticationState = .checking {
+        didSet { transcriptLibrary.setAuthenticated(authenticationState == .signedIn) }
+    }
     @Published private(set) var authenticationMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var progressMessage: String?
@@ -36,6 +38,7 @@ final class RecordingViewModel: ObservableObject {
     @Published private(set) var backendReady = false
     @Published private(set) var checkingBackend = true
     @Published private var retryingUploads = false
+    let transcriptLibrary: TranscriptLibrary
     private let recorder: any AudioRecording
     private let client: APIClient
     private let queue: UploadQueue
@@ -46,6 +49,7 @@ final class RecordingViewModel: ObservableObject {
     private var sessionID: UUID?
     private var stopRequested = false
     private var restoringAuthentication = false
+    private var signingOut = false
     private var unsavedChunks: [ChunkMetadata] = []
 
     var isBusy: Bool { retryingUploads || [.starting, .stopping, .uploading].contains(state) }
@@ -60,6 +64,7 @@ final class RecordingViewModel: ObservableObject {
     ) {
         self.recorder = recorder
         self.client = client
+        transcriptLibrary = TranscriptLibrary(client: client)
         self.queue = queue
         self.credentials = credentials
         signInAction = signIn
@@ -80,7 +85,7 @@ final class RecordingViewModel: ObservableObject {
     }
 
     func restoreAuthentication() async {
-        guard authenticationState != .signingIn, !restoringAuthentication else { return }
+        guard authenticationState != .signingIn, !restoringAuthentication, !signingOut else { return }
         restoringAuthentication = true
         defer { restoringAuthentication = false }
         do {
@@ -96,7 +101,7 @@ final class RecordingViewModel: ObservableObject {
     }
 
     func signIn() async {
-        guard authenticationState != .signingIn, !restoringAuthentication else { return }
+        guard authenticationState != .signingIn, !restoringAuthentication, !signingOut else { return }
         authenticationState = .signingIn
         authenticationMessage = nil
         do {
@@ -115,10 +120,15 @@ final class RecordingViewModel: ObservableObject {
     }
 
     func signOut() async {
-        guard !isBusy, state != .recording else { return }
-        await signOutAction()
+        guard !isBusy, state != .recording, !restoringAuthentication, !signingOut else { return }
+        signingOut = true
+        defer { signingOut = false }
         authenticationState = .signedOut
         authenticationMessage = nil
+        processingSessionID = nil
+        progressMessage = nil
+        state = .ready
+        await signOutAction()
     }
 
     func start() async {
@@ -126,6 +136,7 @@ final class RecordingViewModel: ObservableObject {
         let id = UUID()
         sessionID = id
         processingSessionID = nil
+        transcriptLibrary.clearCompleted()
         stopRequested = false
         state = .starting
         errorMessage = nil
@@ -189,8 +200,10 @@ final class RecordingViewModel: ObservableObject {
                 let session = try await client.recordingSession(id: id)
                 guard processingSessionID == id else { return }
                 if session.status == .completed {
+                    await transcriptLibrary.loadCompleted(sessionID: id)
+                    guard processingSessionID == id else { return }
                     state = .complete
-                    progressMessage = "Transcript ready on your Mac."
+                    progressMessage = "Transcription complete."
                     errorMessage = nil
                     processingSessionID = nil
                     return
@@ -237,8 +250,11 @@ final class RecordingViewModel: ObservableObject {
             authenticationState = .signedIn
             pendingRecordingCount = await queue.pendingRecordings().count
             state = session.status == .completed ? .complete : .processing
-            progressMessage = session.status == .completed ? "Transcript ready on your Mac." : "Uploaded. Waiting for transcription..."
+            progressMessage = session.status == .completed ? "Transcription complete." : "Uploaded. Waiting for transcription..."
             processingSessionID = session.status == .completed ? nil : sessionID
+            if session.status == .completed {
+                await transcriptLibrary.loadCompleted(sessionID: sessionID)
+            }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } catch {
             report(error)

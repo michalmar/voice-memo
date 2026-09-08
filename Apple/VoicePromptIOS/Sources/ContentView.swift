@@ -6,6 +6,21 @@ struct ContentView: View {
     @State private var holdingToTalk = false
 
     var body: some View {
+        TabView {
+            recordingContent
+                .tabItem { Label("Record", systemImage: "mic") }
+            TranscriptHistoryView(library: model.transcriptLibrary, signedIn: model.authenticationState == .signedIn)
+                .id(model.authenticationState == .signedIn)
+                .tabItem { Label("History", systemImage: "clock") }
+        }
+        .task { await model.prepare() }
+        .task(id: model.processingSessionID) { await model.monitorProcessing() }
+        .task(id: model.authenticationState) {
+            if model.authenticationState == .signedIn { await model.transcriptLibrary.refresh() }
+        }
+    }
+
+    private var recordingContent: some View {
         ScrollView {
             VStack(spacing: 24) {
                 Image(systemName: "mic.fill.badge.plus")
@@ -94,10 +109,10 @@ struct ContentView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityHint("Recording runs only while held")
                 .opacity(model.canStartRecording || holdingToTalk ? 1 : 0.5)
+
+                CompletedTranscriptView(library: model.transcriptLibrary)
             }
             .padding(24)
         }
-        .task { await model.prepare() }
-        .task(id: model.processingSessionID) { await model.monitorProcessing() }
     }
 }
