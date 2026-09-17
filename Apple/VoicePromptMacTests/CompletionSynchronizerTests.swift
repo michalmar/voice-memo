@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import Testing
 import VoicePromptKit
@@ -42,6 +43,17 @@ private final class MemoryClipboard: ClipboardWriting {
 }
 
 @MainActor
+private final class MemoryTextPaster: TextPasting {
+    var captureCount = 0
+    var pasteCount = 0
+    func captureTarget() { captureCount += 1 }
+    func pasteFromClipboard() async -> Bool {
+        pasteCount += 1
+        return true
+    }
+}
+
+@MainActor
 private final class MemoryNotifications: NotificationSending {
     var count = 0
     func completed() async { count += 1 }
@@ -79,6 +91,7 @@ struct CompletionSynchronizerTests {
         let credentials: MacCredentials
         let events: TestEvents
         let clipboard: MemoryClipboard
+        let textPaster: MemoryTextPaster
         let notifications: MemoryNotifications
         let defaults: UserDefaults
         let suite: String
@@ -90,12 +103,14 @@ struct CompletionSynchronizerTests {
         let credentials = MacCredentials()
         let events = TestEvents()
         let clipboard = MemoryClipboard()
+        let textPaster = MemoryTextPaster()
         let notifications = MemoryNotifications()
         let client = APIClient(
             baseURL: URL(string: "https://voiceprompt.test/")!, credentials: credentials, session: HTTPStub.session()
         )
         let sync = CompletionSynchronizer(
-            client: client, credentials: credentials, clipboard: clipboard, notifications: notifications,
+            client: client, credentials: credentials, clipboard: clipboard,
+            textPaster: textPaster, notifications: notifications,
             defaults: defaults, events: events, pollInterval: pollInterval,
             signIn: {
                 if signInFails {
@@ -106,6 +121,7 @@ struct CompletionSynchronizerTests {
             signOut: { await credentials.setSignedIn(false) }
         )
         return Harness(sync: sync, credentials: credentials, events: events, clipboard: clipboard,
+                       textPaster: textPaster,
                        notifications: notifications, defaults: defaults, suite: suite)
     }
 
@@ -117,6 +133,15 @@ struct CompletionSynchronizerTests {
         "expires_at":"\(formatter.string(from: Date().addingTimeInterval(48 * 60 * 60)))",
         "markdown":"\(markdown)"}
         """
+    }
+
+    private func decodedTranscript(markdown: String) throws -> Transcript {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(
+            Transcript.self,
+            from: Data(transcript(markdown: markdown).utf8)
+        )
     }
 
     @Test func placeholderBackendMigratesButCustomBackendIsPreserved() {
@@ -223,6 +248,33 @@ struct CompletionSynchronizerTests {
         SystemClipboard(pasteboard: pasteboard).copy(text)
         #expect(pasteboard.string(forType: .string) == text)
         #expect(pasteboard.string(forType: .html) == nil)
+    }
+
+    @Test func immediateTranscriptPastesByDefault() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let record = try decodedTranscript(markdown: "Paste this text")
+
+        h.sync.prepareImmediateDelivery()
+        await h.sync.receiveImmediate(record)
+
+        #expect(h.textPaster.captureCount == 1)
+        #expect(h.textPaster.pasteCount == 1)
+        #expect(h.clipboard.values == ["Paste this text"])
+    }
+
+    @Test func immediateTranscriptCanDisableDirectPaste() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(false, forKey: "pasteQuickTranscription")
+        let record = try decodedTranscript(markdown: "Copy only")
+
+        h.sync.prepareImmediateDelivery()
+        await h.sync.receiveImmediate(record)
+
+        #expect(h.textPaster.captureCount == 1)
+        #expect(h.textPaster.pasteCount == 0)
+        #expect(h.clipboard.values == ["Copy only"])
     }
 
     @Test func cloudDeletionRemovesOnlySelectedRecordWithoutChangingClipboard() async throws {
@@ -398,7 +450,9 @@ struct CompletionSynchronizerTests {
         let h = harness()
         defer { h.defaults.removePersistentDomain(forName: h.suite) }
         let controller = SettingsWindowController()
-        controller.show(synchronizer: h.sync)
+        h.defaults.set(false, forKey: "quickTranscriptionShortcutEnabled")
+        let shortcut = GlobalShortcutManager(defaults: h.defaults) {}
+        controller.show(synchronizer: h.sync, shortcut: shortcut)
         let window = try #require(controller.window)
         defer { window.close() }
         #expect(window.isVisible)
@@ -406,10 +460,28 @@ struct CompletionSynchronizerTests {
         #expect(window.title == "VoicePrompt Settings")
         window.close()
         #expect(!window.isVisible)
-        controller.show(synchronizer: h.sync)
+        controller.show(synchronizer: h.sync, shortcut: shortcut)
         #expect(controller.window === window)
         #expect(window.isVisible)
         #expect(window.canBecomeKey)
+    }
+
+    @Test func disabledGlobalShortcutConfigurationPersists() {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(false, forKey: "quickTranscriptionShortcutEnabled")
+        let manager = GlobalShortcutManager(defaults: h.defaults) {}
+        let configured = GlobalShortcutManager.Shortcut(
+            keyCode: UInt32(kVK_ANSI_R),
+            modifiers: UInt32(cmdKey | optionKey),
+            displayName: "⌥⌘R"
+        )
+
+        manager.updateShortcut(configured)
+
+        let restored = GlobalShortcutManager(defaults: h.defaults) {}
+        #expect(!restored.isEnabled)
+        #expect(restored.shortcut == configured)
     }
 
     @Test func failedTranscriptDownloadPreservesHistoryAndSurfacesFailure() async {

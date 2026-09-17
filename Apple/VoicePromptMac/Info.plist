@@ -18,5 +18,6 @@
 <key>CFBundleURLSchemes</key><array><string>msauth.com.michalmar.voiceprompt.macos</string></array>
 </dict></array>
 <key>LSUIElement</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>VoicePrompt records audio only while the transcription overlay is listening.</string>
 <key>NSHumanReadableCopyright</key><string>VoicePrompt</string>
 </dict></plist>

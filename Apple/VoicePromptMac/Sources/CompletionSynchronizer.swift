@@ -49,6 +49,7 @@ final class CompletionSynchronizer: ObservableObject {
     private let credentials: any CredentialProvider
     private let events: any CompletionEventStreaming
     private let clipboard: any ClipboardWriting
+    private let textPaster: any TextPasting
     private let notifications: any NotificationSending
     private let defaults: UserDefaults
     private let signInAction: @MainActor () async throws -> Void
@@ -72,7 +73,8 @@ final class CompletionSynchronizer: ObservableObject {
 
     init(
         client: APIClient, credentials: any CredentialProvider,
-        clipboard: any ClipboardWriting, notifications: any NotificationSending,
+        clipboard: any ClipboardWriting, textPaster: any TextPasting,
+        notifications: any NotificationSending,
         defaults: UserDefaults = .standard, events: (any CompletionEventStreaming)? = nil,
         pollInterval: Duration = .seconds(60),
         signIn: @escaping @MainActor () async throws -> Void,
@@ -82,6 +84,7 @@ final class CompletionSynchronizer: ObservableObject {
         self.credentials = credentials
         self.events = events ?? EventClient(api: client)
         self.clipboard = clipboard
+        self.textPaster = textPaster
         self.notifications = notifications
         self.defaults = defaults
         self.pollInterval = pollInterval
@@ -217,6 +220,22 @@ final class CompletionSynchronizer: ObservableObject {
         clipboard.copy(transcript.markdown)
         copied.insert(transcript.id)
         defaults.set(copied.map(\.uuidString), forKey: "copiedTranscriptIDs")
+    }
+
+    func prepareImmediateDelivery() {
+        textPaster.captureTarget()
+    }
+
+    func receiveImmediate(_ transcript: Transcript) async {
+        history.removeAll { $0.id == transcript.id }
+        history.append(transcript)
+        history.sort { $0.createdAt > $1.createdAt }
+        copy(transcript)
+        if defaults.object(forKey: "pasteQuickTranscription") == nil
+            || defaults.bool(forKey: "pasteQuickTranscription") {
+            _ = await textPaster.pasteFromClipboard()
+        }
+        await notifications.completed()
     }
 
     func delete(_ transcript: Transcript) async {

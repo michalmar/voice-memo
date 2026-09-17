@@ -2,6 +2,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from azure.identity.aio import DefaultAzureCredential
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
@@ -18,17 +19,23 @@ from .models import (
     TranscriptSummary,
 )
 from .repository import MemoryRepository, Repository
+from .processing import FoundryClient, SpeechClient
 from .runtime import create_event_issuer, create_repository
 from .service import SessionService
 
 
-def create_app(repository: Repository | None = None, settings: Settings | None = None) -> FastAPI:
+def create_app(
+    repository: Repository | None = None,
+    settings: Settings | None = None,
+    speech_client: SpeechClient | None = None,
+) -> FastAPI:
     config = settings or get_settings()
     store = repository or create_repository(config)
     app = FastAPI(title="VoicePrompt API", version="1.0.0")
     app.state.repository = store
     app.state.settings = config
     app.state.event_token_issuer = create_event_issuer(config)
+    app.state.speech_client = speech_client or FoundryClient(config, DefaultAzureCredential())
 
     def service() -> SessionService:
         return SessionService(app.state.repository, app.state.settings)
@@ -86,6 +93,36 @@ def create_app(repository: Repository | None = None, settings: Settings | None =
         sessions: SessionService = Depends(service),
     ):
         return await sessions.complete(principal.subject, session_id, body)
+
+    @app.post("/v1/transcriptions", response_model=Transcript, status_code=status.HTTP_201_CREATED)
+    async def transcribe_immediately(
+        request: Request,
+        session_id: UUID = Header(alias="X-Session-ID"),
+        duration_ms: int = Header(alias="X-Duration-Ms", gt=0, le=7_200_000),
+        locale: str = Header(default="cs-CZ", alias="X-Locale", max_length=32),
+        principal: Principal = Depends(current_principal),
+        sessions: SessionService = Depends(service),
+    ):
+        del duration_ms
+        content_type = request.headers.get("content-type", "").split(";")[0]
+        formats = {
+            "audio/mp4": "m4a",
+            "audio/aac": "aac",
+            "audio/x-m4a": "m4a",
+        }
+        if content_type not in formats:
+            raise HTTPException(status_code=415, detail="Unsupported audio type")
+        data = await request.body()
+        if not data or len(data) > app.state.settings.max_immediate_recording_bytes:
+            raise HTTPException(status_code=413, detail="Invalid recording size")
+        return await sessions.transcribe_immediately(
+            principal.subject,
+            session_id,
+            data,
+            locale,
+            formats[content_type],
+            app.state.speech_client,
+        )
 
     @app.get("/v1/sessions/{session_id}", response_model=SessionView)
     async def get_session(

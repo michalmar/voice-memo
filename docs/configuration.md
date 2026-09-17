@@ -192,28 +192,39 @@ This targeted bootstrap is a one-time exception: it creates only the registry,
 workload identity, pull role, and their resource-group/naming dependencies. The
 temporary image value must never be used for a full deployment.
 
-Build and publish an AMD64 image, then use its immutable digest as
-`container_image` in `terraform.tfvars`:
+After the initial bootstrap, backend images are built and deployed by
+`.github/workflows/deploy-backend.yml`. The workflow runs automatically after the
+`CI` workflow succeeds on `main`, and it can also be dispatched manually from
+`main`. ACR performs the build in Azure, so deployment does not depend on a local
+Docker daemon, machine architecture, corporate pip mirror, or local CA bundle.
 
-```bash
-ACR_LOGIN_SERVER=$(terraform -chdir=infrastructure output -raw registry_login_server)
-ACR_NAME=${ACR_LOGIN_SERVER%%.*}
-az acr login --name "$ACR_NAME" --resource-group rg-voiceprompt-prod
-docker build --platform linux/amd64 -t "$ACR_LOGIN_SERVER/voiceprompt:setup" backend
-docker push "$ACR_LOGIN_SERVER/voiceprompt:setup"
-az acr repository show --name "$ACR_NAME" --resource-group rg-voiceprompt-prod \
-  --image voiceprompt:setup --query digest -o tsv
-```
+The workflow authenticates with GitHub OIDC and requires these non-secret
+repository Actions variables:
 
-Use `<registry-login-server>/voiceprompt@sha256:<digest>`, not a mutable tag. If the
-build needs an organization package mirror, pass a pip configuration file as a
-BuildKit secret: `--secret id=pip_config,src=/path/to/pip.conf`. A custom CA can be
-passed with `--secret id=custom_ca,src=/path/to/ca.crt`; do not disable TLS checks.
-Use your configured resource group in these commands if it differs from
-`rg-voiceprompt-prod`; explicit selection avoids unrelated Azure CLI defaults.
+| Variable | Production value |
+|----------|------------------|
+| `AZURE_CLIENT_ID` | Client ID of the existing GitHub OIDC deployment application |
+| `AZURE_TENANT_ID` | `a7b1484c-f66a-496a-b1cf-35631a50396c` |
+| `AZURE_SUBSCRIPTION_ID` | `7bc68c68-f434-49ad-ab3e-b883ec39da86` |
+| `AZURE_RESOURCE_GROUP` | `rg-voiceprompt-prod` |
+| `ACR_NAME` | `crvoiceprompt18ifwf` |
+| `CONTAINER_APP_NAME` | `ca-voiceprompt-api-18ifwf` |
+| `WORKER_JOB_NAME` | `caj-voiceprompt-worker-18ifwf` |
+| `CLEANUP_JOB_NAME` | `caj-voiceprompt-cleanup-18ifwf` |
+| `API_URL` | `https://ca-voiceprompt-api-18ifwf.calmocean-9149bcf8.swedencentral.azurecontainerapps.io` |
 
-Confirm the workload identity's `AcrPull` assignment has propagated, then review
-and apply the full plan:
+The Azure application must trust the subject
+`repo:michalmar/voice-memo:ref:refs/heads/main` with audience
+`api://AzureADTokenExchange`. No client secret is stored in GitHub.
+
+Each build is tagged with the tested commit SHA, resolved to an immutable digest,
+then deployed to the API, transcription worker, and cleanup job. Terraform ignores
+only those three post-provision image fields; it continues managing configuration,
+identity, networking, scaling, and all other infrastructure.
+
+Confirm the workload identity's `AcrPull` assignment has propagated, set
+`container_image` to any existing immutable bootstrap image, then review and apply
+the full plan:
 
 ```bash
 terraform -chdir=infrastructure validate
@@ -323,7 +334,23 @@ The scrollable panel under the icon lists all loaded transcripts from the last
 Installation and launch work without
 backend configuration, but the app remains **Offline**: sign-in, transcript sync,
 and automatic clipboard delivery require the backend and Entra setup above.
-The Mac app receives transcripts; recording is handled by the iOS app.
+The Mac app also supports quick transcription with a configurable global shortcut,
+defaulting to **Shift-Command-Space**, and a **Start Quick Transcription** action in
+the menu-bar panel. Change or disable the shortcut in **VoicePrompt Settings >
+Quick Transcription**. Starting opens a compact listening HUD immediately. **Stop**
+releases the microphone and starts a latency-first MAI-Transcribe-2 request;
+**Cancel** discards the local
+recording without transcribing. Completed verbatim text is stored in the same
+48-hour cloud history and copied to the clipboard. **Paste text into the active
+app** is enabled by default in the same settings section. VoicePrompt remembers the
+foreground application when recording starts, returns to it when transcription
+finishes, and inserts the text at its cursor. macOS requests Accessibility
+permission on first use. Disable the toggle to retain clipboard delivery without
+automatic insertion. Cleanup/refinement is deliberately skipped for this path.
+Multiple stopped recordings may transcribe concurrently
+while a new recording is in progress. A single quick recording is capped at 64 MiB
+by default (roughly three hours at the app's 48 kbit/s capture rate) through
+`VOICEPROMPT_MAX_IMMEDIATE_RECORDING_BYTES`.
 
 Sign in with Microsoft **on the Mac as well as on iOS**; each app uses its own
 client registration and Keychain. Settings shows the Microsoft login,

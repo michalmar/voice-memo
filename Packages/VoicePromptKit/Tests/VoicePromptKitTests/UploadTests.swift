@@ -38,10 +38,48 @@ struct UploadTests {
                 #expect(detail == "Cannot delete")
             }
         }
+
         HTTPStub.shared.configure([(0, "")])
         await #expect(throws: URLError.self) {
             try await client().deleteTranscript(id: UUID())
         }
+    }
+
+    @Test func immediateTranscriptionUploadsAudioWithFastPathHeaders() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appending(path: "recording.m4a")
+        try Data("audio".utf8).write(to: audioURL)
+        let sessionID = UUID()
+        let transcriptID = UUID()
+        HTTPStub.shared.configure([(
+            201,
+            """
+            {"id":"\(transcriptID)","session_id":"\(sessionID)",
+            "created_at":"2026-09-06T18:30:00Z","expires_at":"2026-09-08T18:30:00Z",
+            "markdown":"Fast raw transcript."}
+            """
+        )])
+
+        let result = try await client().transcribeImmediately(
+            sessionID: sessionID,
+            audioURL: audioURL,
+            durationMilliseconds: 1_250,
+            locale: "en-US"
+        )
+
+        #expect(result.id == transcriptID)
+        #expect(result.markdown == "Fast raw transcript.")
+        let request = try #require(HTTPStub.shared.recordedRequests.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/v1/transcriptions")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "audio/mp4")
+        #expect(request.value(forHTTPHeaderField: "X-Session-ID") == sessionID.uuidString)
+        #expect(request.value(forHTTPHeaderField: "X-Duration-Ms") == "1250")
+        #expect(request.value(forHTTPHeaderField: "X-Locale") == "en-US")
+        #expect(request.value(forHTTPHeaderField: "Content-Length") == "5")
+        #expect(request.timeoutInterval == 180)
     }
 
     private func chunk(directory: URL, id: UUID = UUID(), sequence: Int = 0) throws -> ChunkMetadata {

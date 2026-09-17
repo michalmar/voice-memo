@@ -247,6 +247,10 @@ resource "azurerm_container_app" "api" {
   workload_profile_name        = "Consumption"
   tags                         = local.common_tags
 
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
+
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload.id]
@@ -323,6 +327,10 @@ resource "azurerm_container_app_job" "worker" {
   workload_profile_name        = "Consumption"
   tags                         = local.common_tags
 
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
+
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload.id]
@@ -391,6 +399,10 @@ resource "azurerm_container_app_job" "cleanup" {
   replica_retry_limit          = 2
   workload_profile_name        = "Consumption"
   tags                         = local.common_tags
+
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
 
   identity {
     type         = "UserAssigned"

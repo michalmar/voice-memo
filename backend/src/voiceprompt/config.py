@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     allowed_entra_object_ids: Annotated[set[str], NoDecode] = Field(default_factory=set)
     allow_development_auth: bool = False
     max_chunk_bytes: int = 8 * 1024 * 1024
+    max_immediate_recording_bytes: int = 64 * 1024 * 1024
     max_segments: int = 120
     transcript_ttl_hours: int = 48
     foundry_endpoint: str = ""

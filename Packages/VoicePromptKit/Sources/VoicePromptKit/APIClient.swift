@@ -80,6 +80,28 @@ public actor APIClient {
         )
     }
 
+    public func transcribeImmediately(
+        sessionID: UUID,
+        audioURL: URL,
+        durationMilliseconds: Int,
+        locale: String = "cs-CZ"
+    ) async throws -> Transcript {
+        let bytes = try Data(contentsOf: audioURL, options: .mappedIfSafe)
+        return try await send(
+            path: "v1/transcriptions",
+            method: "POST",
+            body: bytes,
+            headers: [
+                "Content-Type": "audio/mp4",
+                "Content-Length": String(bytes.count),
+                "X-Session-ID": sessionID.uuidString,
+                "X-Duration-Ms": String(durationMilliseconds),
+                "X-Locale": locale,
+            ],
+            timeoutInterval: 180
+        )
+    }
+
     public func transcripts() async throws -> [TranscriptSummary] {
         let list: TranscriptList = try await send(path: "v1/transcripts")
         return list.items
@@ -101,9 +123,16 @@ public actor APIClient {
         path: String,
         method: String = "GET",
         body: Data? = nil,
-        headers: [String: String] = [:]
+        headers: [String: String] = [:],
+        timeoutInterval: TimeInterval = 30
     ) async throws -> T {
-        let data = try await request(path: path, method: method, body: body, headers: headers)
+        let data = try await request(
+            path: path,
+            method: method,
+            body: body,
+            headers: headers,
+            timeoutInterval: timeoutInterval
+        )
         return try decoder.decode(T.self, from: data)
     }
 
@@ -111,13 +140,14 @@ public actor APIClient {
         path: String,
         method: String,
         body: Data? = nil,
-        headers: [String: String] = [:]
+        headers: [String: String] = [:],
+        timeoutInterval: TimeInterval = 30
     ) async throws -> Data {
         let token = try await credentials.accessToken()
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
         request.httpBody = body
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeoutInterval
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Correlation-ID")
         if body != nil && headers["Content-Type"] == nil {

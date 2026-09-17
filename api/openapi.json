@@ -188,6 +188,73 @@
         }
       }
     },
+    "/v1/transcriptions": {
+      "post": {
+        "summary": "Transcribe Immediately",
+        "operationId": "transcribe_immediately_v1_transcriptions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Session-ID",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "X-Session-Id"
+            }
+          },
+          {
+            "name": "X-Duration-Ms",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 7200000,
+              "exclusiveMinimum": 0,
+              "title": "X-Duration-Ms"
+            }
+          },
+          {
+            "name": "X-Locale",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "default": "cs-CZ",
+              "title": "X-Locale"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transcript"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{session_id}": {
       "get": {
         "summary": "Get Session",

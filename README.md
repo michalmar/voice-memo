@@ -18,6 +18,63 @@ Swift package, a FastAPI backend, and private Azure infrastructure.
   private DNS, Managed Identity/RBAC, Web PubSub, and telemetry.
 - `api/openapi.json` — committed API contract.
 
+## Data flows
+
+VoicePrompt has two transcription paths. The Mac path prioritizes immediate
+verbatim text, while the iOS path supports long, resilient recordings and produces
+refined Markdown.
+
+### Mac quick transcription
+
+Press the configurable global shortcut—**Shift-Command-Space** by default—or choose
+**Start Quick Transcription** from the menu-bar panel. Stopping releases the
+microphone before the authenticated request begins, so another recording can start
+while earlier audio is transcribing. Cancel deletes the local recording without
+sending it.
+
+```mermaid
+flowchart LR
+    Start["Configured shortcut<br/>or menu action"] --> Record["Record M4A locally"]
+    Record --> Stop{"Stop or cancel?"}
+    Stop -->|Cancel| Delete["Delete local audio"]
+    Stop -->|Stop| API["POST /v1/transcriptions"]
+    API --> MAI["MAI-Transcribe-2"]
+    MAI --> Store["Store transcript<br/>48-hour expiry"]
+    Store --> Response["Return transcript"]
+    Response --> Clipboard["Copy to clipboard"]
+    Clipboard --> Paste["Paste at saved cursor<br/>when enabled"]
+    Response --> Notice["macOS notification"]
+```
+
+The direct Mac request does not use the cleanup model or Blob Storage. The API
+temporarily converts the request audio to WAV, sends it to the Foundry Speech
+endpoint, stores the verbatim result in Table Storage, and returns it in the same
+HTTP response. That response triggers clipboard delivery and, by default, inserts
+the text at the cursor in the app that was active when recording started. Direct
+paste can be disabled in Mac settings. Web PubSub is not required for this immediate
+path.
+
+### iOS recording to Mac delivery
+
+```mermaid
+flowchart LR
+    IOS["iOS records<br/>30-second M4A chunks"] --> Upload["Authenticated,<br/>resumable upload"]
+    Upload --> Storage["Private Blob Storage"]
+    Storage --> Worker["Container Apps worker"]
+    Worker --> MAI["MAI-Transcribe-2"]
+    MAI --> Refine["Stitch + refine Markdown"]
+    Refine --> Table["Store transcript<br/>48-hour expiry"]
+    Table --> PubSub["Web PubSub sends<br/>transcript ID"]
+    PubSub --> Mac["Mac downloads transcript"]
+    Mac --> Clipboard["Copy to clipboard"]
+    Mac --> Notice["macOS notification"]
+```
+
+If the Mac misses a Web PubSub event, it reconciles transcript history on launch,
+wake, reconnect, and periodic polling. See
+[Architecture decisions](docs/architecture.md) for detailed sequence diagrams,
+state transitions, storage cleanup, and notification behavior.
+
 ## Local validation
 
 ```bash

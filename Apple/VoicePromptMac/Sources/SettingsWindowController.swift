@@ -5,7 +5,10 @@ import SwiftUI
 final class SettingsWindowController: ObservableObject {
     private(set) var window: NSWindow?
 
-    func show(synchronizer: CompletionSynchronizer) {
+    func show(
+        synchronizer: CompletionSynchronizer,
+        shortcut: GlobalShortcutManager
+    ) {
         let settingsWindow: NSWindow
         if let window {
             settingsWindow = window
@@ -20,7 +23,10 @@ final class SettingsWindowController: ObservableObject {
             settingsWindow.identifier = NSUserInterfaceItemIdentifier("voiceprompt-settings")
             settingsWindow.isReleasedWhenClosed = false
             settingsWindow.contentViewController = NSHostingController(
-                rootView: SettingsView(synchronizer: synchronizer)
+                rootView: SettingsView(
+                    synchronizer: synchronizer,
+                    shortcut: shortcut
+                )
             )
             settingsWindow.center()
             window = settingsWindow

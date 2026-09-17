@@ -2,6 +2,8 @@ import SwiftUI
 
 struct HistoryMenuView: View {
     @ObservedObject var synchronizer: CompletionSynchronizer
+    @ObservedObject var transcription: TranscriptionController
+    let shortcutName: String
     let openSettings: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -12,6 +14,23 @@ struct HistoryMenuView: View {
                 Spacer()
                 Text(synchronizer.status).foregroundStyle(.secondary)
             }
+            Divider()
+            Button {
+                dismiss()
+                Task { await transcription.startListening() }
+            } label: {
+                HStack {
+                    Label("Start Quick Transcription", systemImage: "waveform")
+                    Spacer()
+                    Text(shortcutName)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(transcription.captureState != .idle)
+            .padding(.vertical, 4)
             Divider()
             Text("Last 48 Hours").font(.subheadline).foregroundStyle(.secondary)
             if synchronizer.history.isEmpty {

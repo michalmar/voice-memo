@@ -4,7 +4,10 @@ import VoicePromptKit
 @main
 struct VoicePromptMacApp: App {
     @StateObject private var synchronizer: CompletionSynchronizer
+    @StateObject private var transcription: TranscriptionController
+    @StateObject private var shortcut: GlobalShortcutManager
     @StateObject private var settingsWindow = SettingsWindowController()
+    private let overlay: TranscriptionOverlayController
 
     init() {
         let baseURL = URL(string: BackendConfiguration.resolve(
@@ -25,20 +28,45 @@ struct VoicePromptMacApp: App {
         let client = APIClient(baseURL: baseURL, credentials: credentials)
         let sync = CompletionSynchronizer(
             client: client, credentials: credentials,
-            clipboard: SystemClipboard(), notifications: SystemNotifications(),
+            clipboard: SystemClipboard(), textPaster: SystemTextPaster(),
+            notifications: SystemNotifications(),
             signIn: { try await authorization.signIn(using: credentials) },
             signOut: { await credentials.signOut() }
         )
+        let transcription = TranscriptionController(client: client, synchronizer: sync)
+        let shortcut = GlobalShortcutManager {
+            Task { await transcription.startListening() }
+        }
         _synchronizer = StateObject(wrappedValue: sync)
+        _transcription = StateObject(wrappedValue: transcription)
+        _shortcut = StateObject(wrappedValue: shortcut)
+        let overlay = TranscriptionOverlayController(controller: transcription, shortcut: shortcut)
+        self.overlay = overlay
         Task { await sync.start() }
     }
 
     var body: some Scene {
         MenuBarExtra("VoicePrompt", image: "MenuBarIcon") {
-            HistoryMenuView(synchronizer: synchronizer) {
-                settingsWindow.show(synchronizer: synchronizer)
+            HistoryMenuView(
+                synchronizer: synchronizer,
+                transcription: transcription,
+                shortcutName: shortcut.isEnabled ? shortcut.shortcut.displayName : "Menu only"
+            ) {
+                settingsWindow.show(
+                    synchronizer: synchronizer,
+                    shortcut: shortcut
+                )
             }
         }
         .menuBarExtraStyle(.window)
+        .onChange(of: transcription.captureState) {
+            overlay.update(isVisible: transcription.isVisible)
+        }
+        .onChange(of: transcription.activeTranscriptions) {
+            overlay.update(isVisible: transcription.isVisible)
+        }
+        .onChange(of: transcription.lastError) {
+            overlay.update(isVisible: transcription.isVisible)
+        }
     }
 }
