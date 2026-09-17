@@ -1,3 +1,4 @@
+import ApplicationServices
 import ServiceManagement
 import SwiftUI
 
@@ -11,6 +12,7 @@ struct SettingsView: View {
     private var refinementInstructions = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
+    @State private var accessibilityTrusted = AXIsProcessTrusted()
 
     var body: some View {
         Form {
@@ -27,7 +29,26 @@ struct SettingsView: View {
                         .disabled(!shortcut.isEnabled)
                 }
                 Toggle("Paste text into the active app", isOn: $pasteQuickTranscription)
-                Text("When enabled, VoicePrompt returns to the app that was active when recording started and inserts the transcription at the cursor. macOS asks for Accessibility permission the first time.")
+                if pasteQuickTranscription {
+                    LabeledContent(
+                        "Accessibility access",
+                        value: accessibilityTrusted ? "Granted" : "Required"
+                    )
+                    if !accessibilityTrusted {
+                        HStack {
+                            Button("Request Access") {
+                                requestAccessibilityAccess()
+                            }
+                            Button("Open System Settings") {
+                                openAccessibilitySettings()
+                            }
+                        }
+                        Text("If System Settings shows VoicePrompt enabled while access is still required, remove the old VoicePrompt entry and add ~/Applications/VoicePromptMac.app again. This can happen after replacing an ad-hoc signed build.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("When enabled and Accessibility access is granted, VoicePrompt returns to the app that was active when recording started and inserts the transcription at the cursor.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Click the shortcut, then press at least two modifier keys and another key. Stop releases the microphone before transcription, so you can immediately start another recording.")
@@ -128,8 +149,36 @@ struct SettingsView: View {
                     .disabled(synchronizer.isSyncing || synchronizer.isSigningIn)
             }
         }
+        .onAppear {
+            refreshAccessibilityStatus()
+        }
+        .onReceive(
+            NSWorkspace.shared.notificationCenter.publisher(
+                for: NSWorkspace.didActivateApplicationNotification
+            )
+        ) { _ in
+            refreshAccessibilityStatus()
+        }
         .formStyle(.grouped)
         .padding()
         .frame(minWidth: 520, minHeight: 560)
+    }
+
+    private func refreshAccessibilityStatus() {
+        accessibilityTrusted = AXIsProcessTrusted()
+    }
+
+    private func requestAccessibilityAccess() {
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true,
+        ] as CFDictionary
+        accessibilityTrusted = AXIsProcessTrustedWithOptions(options)
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 }

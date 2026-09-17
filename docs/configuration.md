@@ -579,12 +579,16 @@ The easiest local installation is:
 The script:
 
 1. Regenerates the Xcode project.
-2. Builds the macOS app with local ad-hoc signing.
+2. Uses an available Apple Development or Developer ID identity so macOS can
+   preserve Accessibility permission across rebuilds.
 3. Installs it at `~/Applications/VoicePromptMac.app`.
 4. Launches it as a menu-bar app.
 
 Quit an existing VoicePrompt process from its menu before rerunning the installer.
-A paid Apple Developer account is not required for this local build.
+A paid Apple Developer account is not required. If no stable signing identity is
+available, the installer falls back to ad-hoc signing and resets the stale
+VoicePrompt Accessibility entry whenever the app identity changes. In that mode,
+grant Accessibility permission again after each rebuild.
 
 To build manually:
 
@@ -626,6 +630,10 @@ macOS asks for:
 
 Accessibility permission is not required if you only want the transcript copied
 to the clipboard.
+
+The app's Settings show the actual macOS Accessibility status separately from the
+**Paste text into the active app** preference. The preference enables the feature;
+the macOS permission authorizes it.
 
 ### 8.4 Use quick transcription
 
@@ -752,6 +760,21 @@ credentials.
 - Confirm `/health/ready` returns HTTP 200.
 - Rebuild the Apple app after changing `Configuration.xcconfig`.
 - On macOS, a URL saved in Settings overrides the bundled URL until changed.
+
+### Direct paste says Accessibility access is required, but it looks enabled
+
+The paste preference and macOS Accessibility permission are separate. In
+VoicePrompt Settings, check **Accessibility access**:
+
+- If it says **Granted**, direct paste is authorized.
+- If it says **Required**, select **Request Access** or **Open System Settings**.
+- If the macOS list already shows VoicePrompt enabled, remove that stale entry,
+  add `~/Applications/VoicePromptMac.app` again, and enable it.
+
+This usually happens when an older local installation was ad-hoc signed. Run
+`./scripts/install-macos.sh` again: it now prefers a stable Apple Development or
+Developer ID identity and resets an incompatible stale entry during the
+transition.
 
 ### Microsoft sign-in succeeds but the API returns 403
 

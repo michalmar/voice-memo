@@ -472,6 +472,12 @@ Run:
 ./scripts/install-macos.sh
 ```
 
+The installer prefers an available Apple Development or Developer ID identity so
+macOS Accessibility permission survives rebuilds. If it falls back to ad-hoc
+signing, explain that direct-paste permission must be granted again after each
+rebuild. When the installed signing requirement changes, the installer resets
+the stale VoicePrompt Accessibility entry before launch.
+
 If VoicePrompt is already running, ask the user to quit it from the menu-bar app,
 then rerun the installer. Verify:
 
