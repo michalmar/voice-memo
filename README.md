@@ -54,6 +54,12 @@ microphone before the authenticated request begins, so another recording can sta
 while earlier audio is transcribing. Cancel deletes the local recording without
 sending it.
 
+Recording starts with a minimized HUD showing only a 17-bar, audio-reactive waveform
+and a small **Stop** button. Click the waveform to expand it to the full HUD, with an
+elapsed **MM:SS** timer, **Refine**, **Cancel**, and a minimize control. The timer tracks
+recorded audio from the beginning and keeps counting while minimized. Processing
+and errors automatically use the expanded HUD.
+
 ```mermaid
 flowchart LR
     Start["Configured shortcut<br/>or menu action"] --> Record["Record M4A locally"]

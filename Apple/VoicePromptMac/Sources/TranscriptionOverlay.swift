@@ -1,13 +1,54 @@
 import AppKit
+import Combine
 import SwiftUI
+
+@MainActor
+final class TranscriptionOverlayPresentation: ObservableObject {
+    @Published private(set) var isMinimized = false
+    private var captureState = TranscriptionController.CaptureState.idle
+    private var hasError = false
+
+    func update(captureState: TranscriptionController.CaptureState, hasError: Bool) {
+        if captureState != .listening || hasError {
+            isMinimized = false
+        } else if self.captureState != .listening {
+            isMinimized = true
+        }
+        self.captureState = captureState
+        self.hasError = hasError
+    }
+
+    func setMinimized(_ minimized: Bool) {
+        guard captureState == .listening, !hasError else { return }
+        isMinimized = minimized
+    }
+}
+
+enum TranscriptionOverlayLayout {
+    static let expandedSize = NSSize(width: 366, height: 92)
+    static let minimizedSize = NSSize(width: 152, height: 60)
+
+    static func frame(resizing frame: NSRect, to size: NSSize, within screen: NSRect) -> NSRect {
+        NSRect(
+            x: min(max(frame.midX - size.width / 2, screen.minX), screen.maxX - size.width),
+            y: min(max(frame.maxY - size.height, screen.minY), screen.maxY - size.height),
+            width: size.width,
+            height: size.height
+        )
+    }
+}
 
 @MainActor
 final class TranscriptionOverlayController {
     private let panel: NSPanel
+    private let controller: TranscriptionController
+    private let presentation = TranscriptionOverlayPresentation()
+    private var sizeSubscription: AnyCancellable?
 
     init(controller: TranscriptionController, shortcut: GlobalShortcutManager) {
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 366, height: 92),
+        self.controller = controller
+        panel = TranscriptionPanel(
+            contentRect: NSRect(origin: .zero, size: TranscriptionOverlayLayout.expandedSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -21,20 +62,45 @@ final class TranscriptionOverlayController {
         panel.isMovable = true
         panel.isMovableByWindowBackground = true
         panel.setFrameAutosaveName("quick-transcription-overlay")
-        panel.contentView = NSHostingView(
-            rootView: TranscriptionOverlay(controller: controller, shortcut: shortcut)
+        let hostingView = NSHostingView(
+            rootView: TranscriptionOverlay(
+                controller: controller, shortcut: shortcut, presentation: presentation
+            )
         )
+        hostingView.sizingOptions = []
+        panel.contentView = hostingView
+        sizeSubscription = presentation.$isMinimized.removeDuplicates().sink { [weak self] minimized in
+            self?.resize(minimized: minimized)
+        }
     }
 
-    func update(isVisible: Bool) {
-        guard isVisible else {
+    func update() {
+        guard controller.isVisible else {
             panel.orderOut(nil)
+            presentation.update(captureState: controller.captureState, hasError: controller.lastError != nil)
             return
         }
-        if !panel.setFrameUsingName("quick-transcription-overlay") {
-            position()
+        if !panel.isVisible {
+            if !panel.setFrameUsingName("quick-transcription-overlay") {
+                position()
+            }
         }
+        presentation.update(captureState: controller.captureState, hasError: controller.lastError != nil)
+        resize(minimized: presentation.isMinimized)
         panel.orderFrontRegardless()
+    }
+
+    private func resize(minimized: Bool) {
+        guard let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
+        let size = minimized ? TranscriptionOverlayLayout.minimizedSize : TranscriptionOverlayLayout.expandedSize
+        let frame = TranscriptionOverlayLayout.frame(
+            resizing: panel.frame, to: size, within: screen.visibleFrame
+        )
+        guard frame != panel.frame else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2
+            panel.setFrame(frame, display: true, animate: panel.isVisible && context.duration > 0)
+        }
     }
 
     private func position() {
@@ -47,20 +113,73 @@ final class TranscriptionOverlayController {
     }
 }
 
-private struct TranscriptionOverlay: View {
+private final class TranscriptionPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+struct TranscriptionOverlay: View {
     @ObservedObject var controller: TranscriptionController
     @ObservedObject var shortcut: GlobalShortcutManager
+    @ObservedObject var presentation: TranscriptionOverlayPresentation
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @AppStorage(QuickTranscriptionDefaults.refine) private var refine = true
 
     var body: some View {
-        HStack(spacing: 14) {
+        Group {
+            if presentation.isMinimized {
+                minimizedContent
+            } else {
+                expandedContent
+            }
+        }
+        .frame(
+            width: presentation.isMinimized ? 132 : 346,
+            height: presentation.isMinimized ? 40 : 72
+        )
+        .background {
+            RoundedRectangle(cornerRadius: presentation.isMinimized ? 20 : 18, style: .continuous)
+                .fill(
+                    reduceTransparency
+                        ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
+                        : AnyShapeStyle(.ultraThickMaterial)
+                )
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: presentation.isMinimized ? 20 : 18, style: .continuous)
+                .strokeBorder(contrast == .increased ? Color.primary : .white.opacity(0.16))
+                .allowsHitTesting(false)
+        }
+        .padding(10)
+    }
+
+    private var minimizedContent: some View {
+        HStack(spacing: 12) {
+            Button {
+                presentation.setMinimized(false)
+            } label: {
+                SoundBars(level: controller.level)
+                    .frame(width: 72, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(HUDButtonStyle())
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .help("Expand recording HUD")
+            .accessibilityLabel("Expand recording HUD")
+            .accessibilityIdentifier("expand-recording-hud")
+
+            stopButton(size: 24)
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private var expandedContent: some View {
+        HStack(spacing: 10) {
             PanelDragHandle()
 
             if controller.captureState == .listening {
                 SoundBars(level: controller.level)
-                    .frame(width: 54, height: 34)
+                    .frame(width: 70, height: 34)
             } else if controller.refinementRequestedTranscriptions > 0 {
                 RefinementProgressIndicator(
                     isRefining: controller.displayedProcessingPhase == .refining
@@ -72,8 +191,20 @@ private struct TranscriptionOverlay: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.headline)
+                    if controller.captureState == .listening {
+                        Text(controller.recordingTime)
+                            .font(.system(.caption, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .accessibilityLabel("Recording time")
+                            .accessibilityValue(controller.recordingTime)
+                            .accessibilityIdentifier("recording-timer")
+                    }
+                }
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -82,33 +213,44 @@ private struct TranscriptionOverlay: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if controller.captureState == .listening {
-                Toggle("Refine", isOn: $refine)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .help("Refine")
-                    .accessibilityLabel("Refine")
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Toggle("Refine", isOn: $refine)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .help("Refine")
+                            .accessibilityLabel("Refine")
 
-                Button {
-                    Task { await controller.cancelListening() }
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .help("Cancel without transcribing")
-                .accessibilityLabel("Cancel recording")
+                        Button {
+                            presentation.setMinimized(true)
+                        } label: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.caption)
+                                .frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(HUDButtonStyle())
+                        .keyboardShortcut("m", modifiers: [.command, .shift])
+                        .disabled(controller.lastError != nil)
+                        .help("Minimize recording HUD")
+                        .accessibilityLabel("Minimize recording HUD")
+                        .accessibilityIdentifier("minimize-recording-hud")
+                    }
+                    HStack(spacing: 8) {
+                        Button {
+                            Task { await controller.cancelListening() }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(HUDButtonStyle())
+                        .keyboardShortcut(.cancelAction)
+                        .help("Cancel without transcribing")
+                        .accessibilityLabel("Cancel recording")
 
-                Button {
-                    Task { await controller.stopListening() }
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color(nsColor: .systemGreen), in: Circle())
+                        stopButton(size: 28)
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("Stop and transcribe")
-                .accessibilityLabel("Stop and transcribe")
             } else if controller.lastError != nil {
                 Button {
                     controller.dismissError()
@@ -120,21 +262,37 @@ private struct TranscriptionOverlay: View {
             }
         }
         .padding(.horizontal, 16)
-        .frame(width: 346, height: 72)
-        .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    reduceTransparency
-                        ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-                        : AnyShapeStyle(.ultraThickMaterial)
+    }
+
+    private func stopButton(size: CGFloat) -> some View {
+        Button {
+            Task { await controller.stopListening() }
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.caption)
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(Color(nsColor: .systemGreen), in: Circle())
+        }
+        .buttonStyle(HUDButtonStyle())
+        .keyboardShortcut(.defaultAction)
+        .help("Stop and transcribe")
+        .accessibilityLabel("Stop and transcribe")
+        .accessibilityIdentifier("stop-recording")
+    }
+
+    private struct HUDButtonStyle: ButtonStyle {
+        @State private var isHovered = false
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .background(
+                    Color.primary.opacity(configuration.isPressed ? 0.14 : isHovered ? 0.07 : 0),
+                    in: RoundedRectangle(cornerRadius: 6)
                 )
+                .opacity(configuration.isPressed ? 0.7 : 1)
+                .onHover { isHovered = $0 }
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(contrast == .increased ? Color.primary : .white.opacity(0.16))
-        }
-        .padding(10)
-        .help("Drag the panel to move it")
     }
 
     private var title: String {
@@ -159,7 +317,7 @@ private struct TranscriptionOverlay: View {
             }
             return controller.activeTranscriptions > 0
                 ? "\(controller.activeTranscriptions) earlier recording processing"
-                : "Stop to transcribe · × to cancel"
+                : "Stop to transcribe"
         }
         if controller.refiningTranscriptions > 0 && controller.activeTranscriptions > 1 {
             let transcribing = controller.activeTranscriptions - controller.refiningTranscriptions
@@ -238,23 +396,39 @@ private struct SoundBars: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.08, paused: reduceMotion)) { timeline in
-            HStack(alignment: .center, spacing: 4) {
-                ForEach(0..<5, id: \.self) { index in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+            HStack(alignment: .center, spacing: SoundWaveform.barSpacing) {
+                ForEach(0..<SoundWaveform.barCount, id: \.self) { index in
                     Capsule()
-                        .fill(Color(nsColor: .systemGreen).opacity(index == 2 ? 1 : 0.78))
-                        .frame(width: 6, height: height(for: index, at: timeline.date))
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: level)
+                        .fill(Color(nsColor: .systemGreen))
+                        .frame(width: SoundWaveform.barWidth, height: SoundWaveform.height(
+                            for: index,
+                            level: level,
+                            time: timeline.date.timeIntervalSinceReferenceDate,
+                            reduceMotion: reduceMotion
+                        ))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: level)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
-        .accessibilityLabel("Microphone level")
+        .accessibilityHidden(true)
     }
+}
 
-    private func height(for index: Int, at date: Date) -> CGFloat {
-        let shape = [0.55, 0.82, 1.0, 0.76, 0.48][index]
-        let phase = date.timeIntervalSinceReferenceDate * 6 + Double(index) * 0.9
-        let pulse = reduceMotion ? 0.75 : 0.72 + sin(phase) * 0.18
-        return max(6, 34 * shape * (0.28 + level * pulse))
+enum SoundWaveform {
+    static let barCount = 17
+    static let barWidth: CGFloat = 2
+    static let barSpacing: CGFloat = 2
+
+    static func height(for index: Int, level: Double, time: TimeInterval, reduceMotion: Bool) -> CGFloat {
+        let position = Double(index) / Double(barCount - 1)
+        let envelope = 0.35 + 0.65 * pow(sin(position * .pi), 0.7)
+        let energy = pow(min(1, max(0, (level - 0.04) * 2.6)), 0.65)
+        let wave = reduceMotion ? 0.8 :
+            0.25 + 0.5 * abs(sin(Double(index) * 0.68 - time * 11))
+                + 0.25 * abs(sin(Double(index) * 1.17 + time * 17))
+        return 3 + 31 * envelope * (0.04 + 0.96 * energy) * wave
     }
 }

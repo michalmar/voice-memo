@@ -27,12 +27,14 @@ final class TranscriptionController: ObservableObject {
 
     @Published private(set) var captureState: CaptureState = .idle
     @Published private(set) var level = 0.04
+    @Published private(set) var recordingDuration: TimeInterval = 0
     @Published private(set) var activeTranscriptions = 0
     @Published private(set) var lastError: String?
     @Published private var processingPhases: [UUID: ProcessingPhase] = [:]
     @Published private var refinementRequests: Set<UUID> = []
 
-    private let recorder: QuickRecordingEngine
+    private let recorder: any QuickRecording
+    private var captureID: UUID?
     private let client: APIClient
     private let synchronizer: CompletionSynchronizer
     private let defaults: UserDefaults
@@ -40,6 +42,11 @@ final class TranscriptionController: ObservableObject {
 
     var isVisible: Bool {
         captureState != .idle || activeTranscriptions > 0 || lastError != nil
+    }
+
+    var recordingTime: String {
+        Duration.seconds(Int(recordingDuration))
+            .formatted(.time(pattern: .minuteSecond(padMinuteToLength: 2)))
     }
 
     var displayedProcessingPhase: ProcessingPhase {
@@ -57,27 +64,37 @@ final class TranscriptionController: ObservableObject {
     init(
         client: APIClient,
         synchronizer: CompletionSynchronizer,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        recorder: (any QuickRecording)? = nil
     ) {
         self.client = client
         self.synchronizer = synchronizer
         self.defaults = defaults
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appending(path: "VoicePrompt/QuickRecordings", directoryHint: .isDirectory)
-        recorder = QuickRecordingEngine(directory: directory)
+        self.recorder = recorder ?? QuickRecordingEngine(directory: directory)
     }
 
     func startListening() async {
         guard captureState == .idle else { return }
         synchronizer.prepareImmediateDelivery()
+        let captureID = UUID()
+        self.captureID = captureID
+        recordingDuration = 0
+        level = 0.04
         captureState = .starting
         lastError = nil
         do {
-            try await recorder.start { [weak self] level in
-                self?.level = level
+            try await recorder.start { [weak self] reading in
+                guard let self, self.captureID == captureID, self.captureState == .listening else { return }
+                self.level = reading.level
+                self.recordingDuration = reading.duration
             }
+            guard self.captureID == captureID else { return }
             captureState = .listening
         } catch {
+            guard self.captureID == captureID else { return }
+            self.captureID = nil
             captureState = .idle
             report(error)
         }
@@ -87,8 +104,10 @@ final class TranscriptionController: ObservableObject {
         guard captureState == .listening else { return }
         do {
             let recording = try await recorder.stop()
+            captureID = nil
             captureState = .idle
             level = 0.04
+            recordingDuration = 0
             let refine = QuickTranscriptionDefaults.shouldRefine(in: defaults)
             let refinementInstructions = refine
                 ? defaults.string(forKey: QuickTranscriptionDefaults.refinementInstructions) ?? ""
@@ -106,16 +125,21 @@ final class TranscriptionController: ObservableObject {
                 )
             }
         } catch {
+            captureID = nil
             captureState = .idle
+            level = 0.04
+            recordingDuration = 0
             report(error)
         }
     }
 
     func cancelListening() async {
         guard captureState != .idle else { return }
+        captureID = nil
         await recorder.cancel()
         captureState = .idle
         level = 0.04
+        recordingDuration = 0
     }
 
     func dismissError() {

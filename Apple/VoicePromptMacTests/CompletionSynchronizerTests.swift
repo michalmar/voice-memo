@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import Foundation
+import SwiftUI
 import Testing
 import VoicePromptKit
 @testable import VoicePromptMac
@@ -82,6 +83,38 @@ private actor TestEvents: CompletionEventStreaming {
 
     func reconnect() async { await onConnected?() }
     func disconnect() { disconnectCount += 1; onConnected = nil }
+}
+
+private actor TestQuickRecorder: QuickRecording {
+    private var callbacks: [@MainActor @Sendable (QuickRecordingEngine.MeterReading) -> Void] = []
+    private let failsToStart: Bool
+    private let failsToStop: Bool
+    private(set) var cancelCount = 0
+
+    init(failsToStart: Bool = false, failsToStop: Bool = true) {
+        self.failsToStart = failsToStart
+        self.failsToStop = failsToStop
+    }
+
+    func start(
+        meterChanged: @escaping @MainActor @Sendable (QuickRecordingEngine.MeterReading) -> Void
+    ) async throws {
+        if failsToStart { throw QuickRecordingEngine.RecordingError.microphoneDenied }
+        callbacks.append(meterChanged)
+    }
+
+    func emit(duration: TimeInterval, session: Int = 0) async {
+        await callbacks[session](.init(level: 0.5, duration: duration))
+    }
+
+    func stop() throws -> QuickRecordingEngine.Result {
+        if failsToStop { throw QuickRecordingEngine.RecordingError.notRecording }
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID()).m4a")
+        try Data("test-audio".utf8).write(to: url)
+        return .init(sessionID: UUID(), fileURL: url, durationMilliseconds: 65_000)
+    }
+
+    func cancel() { cancelCount += 1 }
 }
 
 @Suite(.serialized)
@@ -510,6 +543,146 @@ struct CompletionSynchronizerTests {
         #expect(QuickTranscriptionDefaults.shouldRefine(in: defaults))
         defaults.set(false, forKey: QuickTranscriptionDefaults.refine)
         #expect(!QuickTranscriptionDefaults.shouldRefine(in: defaults))
+    }
+
+    private func transcriptionController(_ h: Harness, recorder: TestQuickRecorder) -> TranscriptionController {
+        TranscriptionController(
+            client: APIClient(
+                baseURL: URL(string: "https://voiceprompt.test/")!,
+                credentials: h.credentials, session: HTTPStub.session()
+            ),
+            synchronizer: h.sync, defaults: h.defaults, recorder: recorder
+        )
+    }
+
+    @Test func recordingTimerUsesAudioDurationAndDoesNotResetWhenResizing() async {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let recorder = TestQuickRecorder()
+        let controller = transcriptionController(h, recorder: recorder)
+        let presentation = TranscriptionOverlayPresentation()
+        #expect(controller.recordingTime == "00:00")
+        await controller.startListening()
+        presentation.update(captureState: controller.captureState, hasError: false)
+        for (duration, expected) in [
+            (0.0, "00:00"), (0.99, "00:00"), (1.0, "00:01"), (59.99, "00:59"),
+            (60.0, "01:00"), (65.0, "01:05"), (3599.0, "59:59"), (3600.0, "60:00"),
+            (6000.0, "100:00"),
+        ] {
+            await recorder.emit(duration: duration)
+            presentation.setMinimized(false)
+            #expect(controller.recordingTime == expected)
+            presentation.setMinimized(true)
+            #expect(controller.recordingDuration == duration)
+            #expect(controller.recordingTime == expected)
+        }
+        await controller.cancelListening()
+        #expect(controller.recordingTime == "00:00")
+        #expect(controller.captureState == .idle)
+    }
+
+    @Test func cancelledAndPreviousRecordingsCannotUpdateTheNewTimer() async {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let recorder = TestQuickRecorder()
+        let controller = transcriptionController(h, recorder: recorder)
+        await controller.startListening()
+        await recorder.emit(duration: 10)
+        await controller.cancelListening()
+        await recorder.emit(duration: 20)
+        #expect(controller.recordingTime == "00:00")
+        await controller.startListening()
+        await recorder.emit(duration: 30, session: 0)
+        #expect(controller.recordingTime == "00:00")
+        await recorder.emit(duration: 2, session: 1)
+        #expect(controller.recordingTime == "00:02")
+        await controller.cancelListening()
+        #expect(await recorder.cancelCount == 2)
+    }
+
+    @Test func recordingFailuresLeaveNoRunningTimer() async {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let denied = transcriptionController(h, recorder: TestQuickRecorder(failsToStart: true))
+        await denied.startListening()
+        #expect(denied.captureState == .idle)
+        #expect(denied.recordingTime == "00:00")
+        #expect(denied.lastError != nil)
+
+        let recorder = TestQuickRecorder()
+        let controller = transcriptionController(h, recorder: recorder)
+        await controller.startListening()
+        await recorder.emit(duration: 65)
+        await controller.stopListening()
+        await recorder.emit(duration: 66)
+        #expect(controller.captureState == .idle)
+        #expect(controller.recordingTime == "00:00")
+        #expect(controller.lastError != nil)
+    }
+
+    @Test func stopResetsTimerAndStillDeliversTheTranscription() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(false, forKey: QuickTranscriptionDefaults.refine)
+        HTTPStub.shared.configure([(201, transcript(markdown: "Recorded from the HUD"))])
+        let recorder = TestQuickRecorder(failsToStop: false)
+        let controller = transcriptionController(h, recorder: recorder)
+        await controller.startListening()
+        await recorder.emit(duration: 65)
+        await controller.stopListening()
+        #expect(controller.recordingTime == "00:00")
+        #expect(controller.captureState == .idle)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while controller.activeTranscriptions > 0, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.activeTranscriptions == 0)
+        #expect(controller.lastError == nil)
+        #expect(h.clipboard.values == ["Recorded from the HUD"])
+        await recorder.emit(duration: 66)
+        #expect(controller.recordingTime == "00:00")
+    }
+
+    @Test func hudRendersAtItsCompactAndOriginalExpandedSizes() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(false, forKey: "quickTranscriptionShortcutEnabled")
+        let recorder = TestQuickRecorder()
+        let controller = transcriptionController(h, recorder: recorder)
+        let shortcut = GlobalShortcutManager(defaults: h.defaults) {}
+        let presentation = TranscriptionOverlayPresentation()
+        await controller.startListening()
+        await recorder.emit(duration: 65)
+        presentation.update(captureState: controller.captureState, hasError: false)
+        for minimized in [true, false] {
+            presentation.setMinimized(minimized)
+            for colorScheme in [ColorScheme.light, .dark] {
+                let view = TranscriptionOverlay(
+                    controller: controller, shortcut: shortcut, presentation: presentation
+                )
+                .environment(\.colorScheme, colorScheme)
+                let expected = minimized
+                    ? TranscriptionOverlayLayout.minimizedSize : TranscriptionOverlayLayout.expandedSize
+                let hostingView = NSHostingView(rootView: view)
+                hostingView.appearance = NSAppearance(named: colorScheme == .light ? .aqua : .darkAqua)
+                let window = NSWindow(
+                    contentRect: NSRect(origin: .zero, size: expected),
+                    styleMask: [.borderless], backing: .buffered, defer: false
+                )
+                window.contentView = hostingView
+                hostingView.layoutSubtreeIfNeeded()
+                #expect(hostingView.fittingSize == expected)
+                let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+                hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+                let data = try #require(bitmap.representation(using: .png, properties: [:]))
+                Attachment.record(
+                    data,
+                    named: "hud-\(minimized ? "minimized" : "expanded")-\(colorScheme == .light ? "light" : "dark").png"
+                )
+            }
+        }
+        await controller.cancelListening()
     }
 
     @Test func failedTranscriptDownloadPreservesHistoryAndSurfacesFailure() async {

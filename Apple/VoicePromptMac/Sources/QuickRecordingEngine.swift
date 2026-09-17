@@ -1,7 +1,15 @@
 import AVFoundation
 import Foundation
 
-actor QuickRecordingEngine {
+protocol QuickRecording: Sendable {
+    func start(
+        meterChanged: @escaping @MainActor @Sendable (QuickRecordingEngine.MeterReading) -> Void
+    ) async throws
+    func stop() async throws -> QuickRecordingEngine.Result
+    func cancel() async
+}
+
+actor QuickRecordingEngine: QuickRecording {
     enum RecordingError: LocalizedError {
         case microphoneDenied
         case couldNotRecord
@@ -25,18 +33,28 @@ actor QuickRecordingEngine {
         let durationMilliseconds: Int
     }
 
+    struct MeterReading: Sendable {
+        let level: Double
+        let duration: TimeInterval
+    }
+
     private let directory: URL
     private var recorder: AVAudioRecorder?
     private var sessionID: UUID?
-    private var startedAt: Date?
+    private var pendingStartID: UUID?
     private var meterTask: Task<Void, Never>?
 
     init(directory: URL) {
         self.directory = directory
     }
 
-    func start(levelChanged: @escaping @MainActor @Sendable (Double) -> Void) async throws {
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+    func start(meterChanged: @escaping @MainActor @Sendable (MeterReading) -> Void) async throws {
+        let startID = UUID()
+        pendingStartID = startID
+        let allowed = await AVCaptureDevice.requestAccess(for: .audio)
+        guard pendingStartID == startID else { throw CancellationError() }
+        pendingStartID = nil
+        guard allowed else {
             throw RecordingError.microphoneDenied
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -53,12 +71,11 @@ actor QuickRecordingEngine {
         guard recorder.record() else { throw RecordingError.couldNotRecord }
         self.recorder = recorder
         sessionID = id
-        startedAt = Date()
         meterTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(80))
-                guard !Task.isCancelled, let level = await self?.meterLevel() else { return }
-                await levelChanged(level)
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled, let reading = await self?.meterReading() else { return }
+                await meterChanged(reading)
             }
         }
     }
@@ -66,21 +83,22 @@ actor QuickRecordingEngine {
     func stop() throws -> Result {
         meterTask?.cancel()
         meterTask = nil
-        guard let recorder, let sessionID, let startedAt else {
+        guard let recorder, let sessionID else {
             throw RecordingError.notRecording
         }
+        let duration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
         self.sessionID = nil
-        self.startedAt = nil
         return Result(
             sessionID: sessionID,
             fileURL: recorder.url,
-            durationMilliseconds: max(1, Int(Date().timeIntervalSince(startedAt) * 1_000))
+            durationMilliseconds: max(1, Int(duration * 1_000))
         )
     }
 
     func cancel() {
+        pendingStartID = nil
         meterTask?.cancel()
         meterTask = nil
         recorder?.stop()
@@ -89,13 +107,15 @@ actor QuickRecordingEngine {
         }
         recorder = nil
         sessionID = nil
-        startedAt = nil
     }
 
-    private func meterLevel() -> Double? {
+    private func meterReading() -> MeterReading? {
         guard let recorder else { return nil }
         recorder.updateMeters()
         let decibels = recorder.averagePower(forChannel: 0)
-        return min(1, max(0.04, Double(pow(10, decibels / 24))))
+        return MeterReading(
+            level: min(1, max(0.04, Double(pow(10, decibels / 24)))),
+            duration: recorder.currentTime
+        )
     }
 }

@@ -12,8 +12,12 @@ The macOS quick-transcription path is intentionally latency-first. The configura
 global shortcut (`Shift-Command-Space` by default) or the menu-bar action opens a
 compact HUD and records one local M4A file. Stop sends that recording to the
 synchronous `POST /v1/transcriptions` endpoint, which calls MAI-Transcribe-2 and
-stores the verbatim result directly when refinement is disabled. The HUD's compact
-Refine switch is enabled by default and adds `X-Refine: true`, which runs the same
+stores the verbatim result directly when refinement is disabled. While listening,
+the HUD starts minimized with only audio-reactive bars and Stop. Clicking the bars
+expands it to expose the MM:SS recording timer, Cancel, Refine, and a minimize control.
+The timer uses the recorder's audio duration, not the view's lifetime or a wall clock,
+so opening the microphone and resizing the HUD do not affect the elapsed time.
+The expanded HUD's Refine switch is enabled by default and adds `X-Refine: true`, which runs the same
 Luna cleanup used by the iOS pipeline before the transcript is stored. The
 microphone is released before the request begins, so another recording can start
 while earlier requests remain in flight.
@@ -95,9 +99,11 @@ sequenceDiagram
 
 Every stopped recording owns an independent asynchronous request. The controller
 tracks the number of requests in flight, while permitting one new active recording.
-The HUD can therefore show “Listening” and an earlier-transcription count at the
+The expanded HUD can therefore show “Listening” and an earlier-transcription count at the
 same time. For requests using Luna, it polls the session status while the synchronous
 request is in flight and changes the HUD from “Transcribing” to “Refining with Luna.”
+Processing and errors expand the HUD automatically; each new recording starts
+minimized. Resizing preserves the panel's top-center anchor and keeps it on-screen.
 The API also marks the returned transcript as refined, which keeps a sparkle badge
 in macOS history and lets the app warn when an older backend does not confirm Luna.
 

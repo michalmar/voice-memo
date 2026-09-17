@@ -60,13 +60,13 @@ struct VoicePromptMacApp: App {
         }
         .menuBarExtraStyle(.window)
         .onChange(of: transcription.captureState) {
-            overlay.update(isVisible: transcription.isVisible)
+            overlay.update()
         }
         .onChange(of: transcription.activeTranscriptions) {
-            overlay.update(isVisible: transcription.isVisible)
+            overlay.update()
         }
         .onChange(of: transcription.lastError) {
-            overlay.update(isVisible: transcription.isVisible)
+            overlay.update()
         }
     }
 }
