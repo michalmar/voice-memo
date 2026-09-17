@@ -38,6 +38,7 @@ protocol TextPasting {
 @MainActor
 final class SystemTextPaster: TextPasting {
     private var targetApplication: NSRunningApplication?
+    private var targetElement: AXUIElement?
     private var lastExternalApplication: NSRunningApplication?
     private var activationObserver: NSObjectProtocol?
     private let logger = Logger(
@@ -76,8 +77,14 @@ final class SystemTextPaster: TextPasting {
         } else {
             targetApplication = lastExternalApplication
         }
+        targetElement = focusedElement()
         if let targetApplication {
-            logger.debug("Captured paste target PID \(targetApplication.processIdentifier)")
+            let name = targetApplication.localizedName
+                ?? targetApplication.bundleIdentifier
+                ?? "Unknown"
+            logger.info(
+                "Captured paste target \(name, privacy: .public) PID \(targetApplication.processIdentifier)"
+            )
         } else {
             logger.error("Could not capture a paste target")
         }
@@ -101,16 +108,23 @@ final class SystemTextPaster: TextPasting {
             logger.error("Paste target did not become active")
             return .activationFailed
         }
+        await restoreCapturedFocus()
 
-        if pasteUsingAccessibility(into: targetApplication) {
-            logger.debug("Pasted through the Accessibility API")
+        if pasteUsingMenu(into: targetApplication) {
+            logger.info("Pasted through the target application's menu command")
             return .pasted
         }
-        guard await pasteUsingKeyboardEvent() else {
+        if pasteUsingAccessibility() {
+            logger.info("Pasted through the focused Accessibility element")
+            return .pasted
+        }
+        guard await pasteUsingKeyboardEvent(into: targetApplication) else {
             logger.error("Could not create a Command-V keyboard event")
             return .eventCreationFailed
         }
-        logger.debug("Posted Command-V to the active paste target")
+        logger.info(
+            "Posted Command-V directly to paste target PID \(targetApplication.processIdentifier)"
+        )
         return .pasted
     }
 
@@ -150,18 +164,41 @@ final class SystemTextPaster: TextPasting {
         return false
     }
 
-    private func pasteUsingAccessibility(into application: NSRunningApplication) -> Bool {
-        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+    private func focusedElement() -> AXUIElement? {
+        let systemElement = AXUIElementCreateSystemWide()
         var focusedElement: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
-            applicationElement,
+            systemElement,
             kAXFocusedUIElementAttribute as CFString,
             &focusedElement
         ) == .success, let focusedElement else {
-            return false
+            return nil
         }
+        return (focusedElement as! AXUIElement)
+    }
 
-        let element = focusedElement as! AXUIElement
+    private func restoreCapturedFocus() async {
+        guard let targetElement else { return }
+        var isSettable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(
+            targetElement,
+            kAXFocusedAttribute as CFString,
+            &isSettable
+        ) == .success, isSettable.boolValue else {
+            return
+        }
+        guard AXUIElementSetAttributeValue(
+            targetElement,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success else {
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    private func pasteUsingAccessibility() -> Bool {
+        guard let element = targetElement ?? focusedElement() else { return false }
         var isSettable = DarwinBoolean(false)
         guard AXUIElementIsAttributeSettable(
             element,
@@ -178,16 +215,79 @@ final class SystemTextPaster: TextPasting {
         ) == .success
     }
 
-    private func pasteUsingKeyboardEvent() async -> Bool {
+    private func pasteUsingMenu(into application: NSRunningApplication) -> Bool {
+        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        var menuBarValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            applicationElement,
+            kAXMenuBarAttribute as CFString,
+            &menuBarValue
+        ) == .success, let menuBarValue else {
+            return false
+        }
+
+        let menuBar = menuBarValue as! AXUIElement
+        guard let pasteItem = findPasteMenuItem(in: menuBar, depth: 0) else {
+            return false
+        }
+        return AXUIElementPerformAction(
+            pasteItem,
+            kAXPressAction as CFString
+        ) == .success
+    }
+
+    private func findPasteMenuItem(in element: AXUIElement, depth: Int) -> AXUIElement? {
+        guard depth <= 6 else { return nil }
+
+        var commandValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            element,
+            kAXMenuItemCmdCharAttribute as CFString,
+            &commandValue
+        ) == .success,
+           let command = commandValue as? String,
+           command.caseInsensitiveCompare("v") == .orderedSame {
+            var modifiersValue: CFTypeRef?
+            let modifiersResult = AXUIElementCopyAttributeValue(
+                element,
+                kAXMenuItemCmdModifiersAttribute as CFString,
+                &modifiersValue
+            )
+            let modifiers = (modifiersValue as? NSNumber)?.uint32Value ?? 0
+            if modifiersResult != .success || modifiers == 0 {
+                return element
+            }
+        }
+
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXChildrenAttribute as CFString,
+            &childrenValue
+        ) == .success,
+              let children = childrenValue as? [AXUIElement]
+        else {
+            return nil
+        }
+
+        for child in children {
+            if let pasteItem = findPasteMenuItem(in: child, depth: depth + 1) {
+                return pasteItem
+            }
+        }
+        return nil
+    }
+
+    private func pasteUsingKeyboardEvent(into application: NSRunningApplication) async -> Bool {
         guard let source = CGEventSource(stateID: .hidSystemState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
+        keyDown.postToPid(application.processIdentifier)
         try? await Task.sleep(for: .milliseconds(20))
-        keyUp.post(tap: .cghidEventTap)
+        keyUp.postToPid(application.processIdentifier)
         return true
     }
 }
