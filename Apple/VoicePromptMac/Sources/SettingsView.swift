@@ -7,6 +7,8 @@ struct SettingsView: View {
     @AppStorage("backendURL") private var backendURL =
         Bundle.main.object(forInfoDictionaryKey: "BACKEND_URL") as? String ?? "https://voiceprompt.invalid/"
     @AppStorage("pasteQuickTranscription") private var pasteQuickTranscription = true
+    @AppStorage(QuickTranscriptionDefaults.refinementInstructions)
+    private var refinementInstructions = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
 
@@ -36,6 +38,49 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
+                }
+            }
+
+            Section("Luna Refinement") {
+                Text("These optional instructions are added to VoicePrompt's built-in refinement prompt for Mac quick transcriptions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $refinementInstructions)
+                        .font(.body)
+                        .padding(4)
+                    if refinementInstructions.isEmpty {
+                        Text("For example: Use concise bullet points and preserve code exactly.")
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 12)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(minHeight: 110)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(nsColor: .separatorColor))
+                }
+                HStack {
+                    Text("Leave empty to use the built-in refinement prompt unchanged.")
+                    Spacer()
+                    Text(
+                        "\(refinementInstructions.unicodeScalars.count)/\(QuickTranscriptionDefaults.maximumRefinementInstructionLength)"
+                    )
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .onChange(of: refinementInstructions) { _, value in
+                    let limited = String(
+                        value.unicodeScalars.prefix(
+                            QuickTranscriptionDefaults.maximumRefinementInstructionLength
+                        )
+                    )
+                    if limited != value {
+                        refinementInstructions = limited
+                    }
                 }
             }
 
@@ -85,6 +130,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(minWidth: 480, minHeight: 440)
+        .frame(minWidth: 520, minHeight: 560)
     }
 }

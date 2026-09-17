@@ -31,6 +31,12 @@ struct TranscriptMenuItem: View {
                         .foregroundStyle(isHighlighted ? highlightedText : .primary)
                     HStack {
                         Text(transcript.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        if transcript.refined == true {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(isHighlighted ? highlightedText : Color.accentColor)
+                                .help("Refined")
+                                .accessibilityLabel("Refined")
+                        }
                         if copied {
                             Label("Copied", systemImage: "checkmark")
                                 .foregroundStyle(isHighlighted ? highlightedText : .green)

@@ -14,7 +14,7 @@ final class SettingsWindowController: ObservableObject {
             settingsWindow = window
         } else {
             settingsWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 540, height: 480),
+                contentRect: NSRect(x: 0, y: 0, width: 580, height: 620),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false

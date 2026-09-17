@@ -10,12 +10,15 @@ public protocol CredentialProvider: Sendable {
 public actor APIClient {
     public enum Error: LocalizedError {
         case invalidResponse
+        case refinementInstructionsTooLong
         case server(status: Int, detail: String)
 
         public var errorDescription: String? {
             switch self {
             case .invalidResponse:
                 return "The server returned an unreadable response."
+            case .refinementInstructionsTooLong:
+                return "Refinement instructions must be 4,000 characters or fewer."
             case .server(let status, let detail):
                 if status == 401 { return "Your sign-in has expired. Sign in with Microsoft again." }
                 if status == 403 { return "Your Microsoft account does not have access to this backend." }
@@ -84,22 +87,51 @@ public actor APIClient {
         sessionID: UUID,
         audioURL: URL,
         durationMilliseconds: Int,
-        locale: String = "cs-CZ"
+        locale: String = "cs-CZ",
+        refine: Bool = false,
+        customRefinementInstructions: String = ""
     ) async throws -> Transcript {
         let bytes = try Data(contentsOf: audioURL, options: .mappedIfSafe)
+        guard !refine || customRefinementInstructions.unicodeScalars.count <= 4_000 else {
+            throw Error.refinementInstructionsTooLong
+        }
+        let instructions = refine
+            ? customRefinementInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        let boundary = "VoicePrompt-\(UUID().uuidString)"
+        let body = instructions.isEmpty
+            ? bytes
+            : multipartBody(audio: bytes, instructions: instructions, boundary: boundary)
         return try await send(
             path: "v1/transcriptions",
             method: "POST",
-            body: bytes,
+            body: body,
             headers: [
-                "Content-Type": "audio/mp4",
-                "Content-Length": String(bytes.count),
+                "Content-Type": instructions.isEmpty
+                    ? "audio/mp4"
+                    : "multipart/form-data; boundary=\(boundary)",
+                "Content-Length": String(body.count),
                 "X-Session-ID": sessionID.uuidString,
                 "X-Duration-Ms": String(durationMilliseconds),
                 "X-Locale": locale,
+                "X-Refine": String(refine),
             ],
-            timeoutInterval: 180
+            timeoutInterval: refine ? 360 : 180
         )
+    }
+
+    private func multipartBody(audio: Data, instructions: String, boundary: String) -> Data {
+        var body = Data()
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"audio\"; filename=\"recording.m4a\"\r\n".utf8))
+        body.append(Data("Content-Type: audio/mp4\r\n\r\n".utf8))
+        body.append(audio)
+        body.append(Data("\r\n--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"refinement_instructions\"\r\n".utf8))
+        body.append(Data("Content-Type: text/plain; charset=utf-8\r\n\r\n".utf8))
+        body.append(Data(instructions.utf8))
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        return body
     }
 
     public func transcripts() async throws -> [TranscriptSummary] {

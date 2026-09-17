@@ -24,8 +24,10 @@ class FakeModels:
         del locale, context
         return audio.decode()
 
-    async def refine(self, transcript: str) -> str:
+    async def refine(self, transcript: str, custom_instructions: str | None = None) -> str:
+        assert custom_instructions is None
         return f"# Prompt\n\n{transcript}"
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("locale", ["cs-CZ", "en-US", "de-DE"])
@@ -142,6 +144,7 @@ async def test_foundry_cleanup_temperature_is_opt_in(monkeypatch, temperature):
         assert request.headers["Authorization"] == "Bearer test-token"
         payload = json.loads(request.content)
         assert payload["messages"][0]["role"] == "system"
+        assert "Use bullet points." in payload["messages"][0]["content"]
         assert payload["messages"][1] == {"role": "user", "content": "Keep this detail."}
         if temperature is None:
             assert "temperature" not in payload
@@ -151,7 +154,10 @@ async def test_foundry_cleanup_temperature_is_opt_in(monkeypatch, temperature):
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr("voiceprompt.processing.httpx.AsyncClient", lambda **kwargs: http_client)
-    assert await FoundryClient(settings, credential).refine("Keep this detail.") == "Keep this detail."
+    assert await FoundryClient(settings, credential).refine(
+        "Keep this detail.",
+        "Use bullet points.",
+    ) == "Keep this detail."
     credential.get_token.assert_awaited_once_with("https://cognitiveservices.azure.com/.default")
 
 
@@ -194,6 +200,7 @@ async def test_local_end_to_end_deletes_intermediate_data():
     assert session.status == SessionStatus.COMPLETED
     transcripts = await repository.list_transcripts("owner", session.created_at)
     assert transcripts[0].markdown == "# Prompt\n\nVytvor API pomoci FastAPI"
+    assert transcripts[0].refined is True
     assert repository.chunks == {}
     assert repository.segment_texts == {}
 

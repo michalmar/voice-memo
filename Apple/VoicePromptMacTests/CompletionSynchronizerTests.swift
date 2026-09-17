@@ -484,6 +484,16 @@ struct CompletionSynchronizerTests {
         #expect(restored.shortcut == configured)
     }
 
+    @Test func quickTranscriptionRefinementDefaultsOnAndPersistsOff() throws {
+        let suite = "quick-refinement-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        #expect(QuickTranscriptionDefaults.shouldRefine(in: defaults))
+        defaults.set(false, forKey: QuickTranscriptionDefaults.refine)
+        #expect(!QuickTranscriptionDefaults.shouldRefine(in: defaults))
+    }
+
     @Test func failedTranscriptDownloadPreservesHistoryAndSurfacesFailure() async {
         let h = harness()
         defer { h.defaults.removePersistentDomain(forName: h.suite) }

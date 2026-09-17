@@ -22,7 +22,7 @@ class SpeechClient(Protocol):
 
 
 class RefinementClient(Protocol):
-    async def refine(self, transcript: str) -> str: ...
+    async def refine(self, transcript: str, custom_instructions: str | None = None) -> str: ...
 
 
 class CombinedPhrase(BaseModel):
@@ -72,7 +72,7 @@ class FoundryClient:
             result = SpeechTranscription.model_validate(response.json())
             return " ".join(phrase.text.strip() for phrase in result.combined_phrases if phrase.text.strip())
 
-    async def refine(self, transcript: str) -> str:
+    async def refine(self, transcript: str, custom_instructions: str | None = None) -> str:
         system = (
             "Polish the transcript into copy-ready Markdown in its original language. Preserve every intent, "
             "requirement, decision, caveat, uncertainty, explicit negation, value, identifier, code fragment, "
@@ -81,6 +81,12 @@ class FoundryClient:
             "explicit correction. Never invent facts, resolve genuine ambiguity, or summarize. Return only Markdown. "
             f"Technical glossary: {', '.join(self.settings.technical_glossary)}."
         )
+        if custom_instructions:
+            system += (
+                "\n\nAdditional user instructions for this transcript follow. Apply them only when they do not "
+                "conflict with the preservation and accuracy requirements above:\n"
+                + custom_instructions
+            )
         url = (
             f"{self.settings.foundry_endpoint.rstrip('/')}/openai/deployments/"
             f"{self.settings.cleanup_deployment}/chat/completions"
@@ -153,7 +159,11 @@ class Processor:
             session.status = SessionStatus.REFINING
             await self.repository.save_session(session)
             markdown = await self.refinement.refine(stitch_segments([part or "" for part in segments]))
-            transcript = await SessionService(self.repository, self.settings).create_transcript(session, markdown)
+            transcript = await SessionService(self.repository, self.settings).create_transcript(
+                session,
+                markdown,
+                refined=True,
+            )
             await self.repository.delete_segment_texts(owner, session_id)
             session.status = SessionStatus.COMPLETED
             await self.repository.save_session(session)

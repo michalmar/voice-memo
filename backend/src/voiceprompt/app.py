@@ -5,6 +5,7 @@ from uuid import UUID
 from azure.identity.aio import DefaultAzureCredential
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from starlette.datastructures import UploadFile
 
 from .auth import Principal, current_principal
 from .config import Settings, get_settings
@@ -19,7 +20,7 @@ from .models import (
     TranscriptSummary,
 )
 from .repository import MemoryRepository, Repository
-from .processing import FoundryClient, SpeechClient
+from .processing import FoundryClient, RefinementClient, SpeechClient
 from .runtime import create_event_issuer, create_repository
 from .service import SessionService
 
@@ -28,6 +29,7 @@ def create_app(
     repository: Repository | None = None,
     settings: Settings | None = None,
     speech_client: SpeechClient | None = None,
+    refinement_client: RefinementClient | None = None,
 ) -> FastAPI:
     config = settings or get_settings()
     store = repository or create_repository(config)
@@ -35,7 +37,13 @@ def create_app(
     app.state.repository = store
     app.state.settings = config
     app.state.event_token_issuer = create_event_issuer(config)
-    app.state.speech_client = speech_client or FoundryClient(config, DefaultAzureCredential())
+    foundry_client = (
+        FoundryClient(config, DefaultAzureCredential())
+        if speech_client is None or refinement_client is None
+        else None
+    )
+    app.state.speech_client = speech_client or foundry_client
+    app.state.refinement_client = refinement_client or foundry_client
 
     def service() -> SessionService:
         return SessionService(app.state.repository, app.state.settings)
@@ -100,11 +108,27 @@ def create_app(
         session_id: UUID = Header(alias="X-Session-ID"),
         duration_ms: int = Header(alias="X-Duration-Ms", gt=0, le=7_200_000),
         locale: str = Header(default="cs-CZ", alias="X-Locale", max_length=32),
+        refine: bool = Header(default=False, alias="X-Refine"),
         principal: Principal = Depends(current_principal),
         sessions: SessionService = Depends(service),
     ):
         del duration_ms
-        content_type = request.headers.get("content-type", "").split(";")[0]
+        request_content_type = request.headers.get("content-type", "").split(";")[0]
+        refinement_instructions: str | None = None
+        if request_content_type == "multipart/form-data":
+            form = await request.form()
+            audio = form.get("audio")
+            if not isinstance(audio, UploadFile):
+                raise HTTPException(status_code=422, detail="Multipart request must include an audio file")
+            data = await audio.read()
+            content_type = audio.content_type or ""
+            supplied_instructions = form.get("refinement_instructions", "")
+            if not isinstance(supplied_instructions, str):
+                raise HTTPException(status_code=422, detail="Refinement instructions must be text")
+            refinement_instructions = supplied_instructions.strip() or None
+        else:
+            data = await request.body()
+            content_type = request_content_type
         formats = {
             "audio/mp4": "m4a",
             "audio/aac": "aac",
@@ -112,7 +136,8 @@ def create_app(
         }
         if content_type not in formats:
             raise HTTPException(status_code=415, detail="Unsupported audio type")
-        data = await request.body()
+        if refinement_instructions and len(refinement_instructions) > 4_000:
+            raise HTTPException(status_code=422, detail="Refinement instructions exceed 4,000 characters")
         if not data or len(data) > app.state.settings.max_immediate_recording_bytes:
             raise HTTPException(status_code=413, detail="Invalid recording size")
         return await sessions.transcribe_immediately(
@@ -121,7 +146,10 @@ def create_app(
             data,
             locale,
             formats[content_type],
+            refine,
+            refinement_instructions,
             app.state.speech_client,
+            app.state.refinement_client,
         )
 
     @app.get("/v1/sessions/{session_id}", response_model=SessionView)

@@ -21,6 +21,10 @@ class SpeechTranscriber(Protocol):
     async def transcribe(self, audio: bytes, locale: str, context: str | None) -> str: ...
 
 
+class TranscriptRefiner(Protocol):
+    async def refine(self, transcript: str, custom_instructions: str | None = None) -> str: ...
+
+
 class SessionService:
     def __init__(self, repository: Repository, settings: Settings) -> None:
         self.repository = repository
@@ -104,13 +108,19 @@ class SessionService:
             )
         return session
 
-    async def create_transcript(self, session: SessionRecord, markdown: str) -> TranscriptRecord:
+    async def create_transcript(
+        self,
+        session: SessionRecord,
+        markdown: str,
+        refined: bool | None = None,
+    ) -> TranscriptRecord:
         now = datetime.now(UTC)
         transcript = TranscriptRecord(
             id=uuid4(),
             session_id=session.id,
             owner=session.owner,
             markdown=markdown,
+            refined=refined,
             created_at=now,
             expires_at=now + timedelta(hours=self.settings.transcript_ttl_hours),
         )
@@ -124,7 +134,10 @@ class SessionService:
         audio: bytes,
         locale: str,
         audio_format: str,
+        refine: bool,
+        refinement_instructions: str | None,
         speech: SpeechTranscriber,
+        refinement: TranscriptRefiner,
     ) -> TranscriptRecord:
         session = await self.create(
             owner,
@@ -133,15 +146,23 @@ class SessionService:
         session.status = SessionStatus.TRANSCRIBING
         await self.repository.save_session(session)
         try:
-            transcript = await self.create_transcript(
-                session,
-                await speech.transcribe(audio, locale, None),
-            )
+            markdown = await speech.transcribe(audio, locale, None)
         except Exception:
             session.status = SessionStatus.FAILED
             session.error_code = "speech_failed"
             await self.repository.save_session(session)
             raise
+        if refine:
+            session.status = SessionStatus.REFINING
+            await self.repository.save_session(session)
+            try:
+                markdown = await refinement.refine(markdown, refinement_instructions)
+            except Exception:
+                session.status = SessionStatus.FAILED
+                session.error_code = "refinement_failed"
+                await self.repository.save_session(session)
+                raise
+        transcript = await self.create_transcript(session, markdown, refined=refine)
         session.status = SessionStatus.COMPLETED
         await self.repository.save_session(session)
         return transcript

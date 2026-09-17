@@ -229,6 +229,16 @@
               "default": "cs-CZ",
               "title": "X-Locale"
             }
+          },
+          {
+            "name": "X-Refine",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "X-Refine"
+            }
           }
         ],
         "responses": {
@@ -629,6 +639,17 @@
           "markdown": {
             "type": "string",
             "title": "Markdown"
+          },
+          "refined": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refined"
           }
         },
         "type": "object",

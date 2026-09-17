@@ -69,9 +69,10 @@ public struct Transcript: Codable, Identifiable, Sendable {
     public let createdAt: Date
     public let expiresAt: Date
     public let markdown: String
+    public let refined: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case id, markdown
+        case id, markdown, refined
         case sessionID = "session_id"
         case createdAt = "created_at"
         case expiresAt = "expires_at"

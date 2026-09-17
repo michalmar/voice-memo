@@ -45,7 +45,7 @@ struct UploadTests {
         }
     }
 
-    @Test func immediateTranscriptionUploadsAudioWithFastPathHeaders() async throws {
+    @Test func immediateTranscriptionUploadsAudioWithRefinementHeader() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -58,7 +58,7 @@ struct UploadTests {
             """
             {"id":"\(transcriptID)","session_id":"\(sessionID)",
             "created_at":"2026-09-06T18:30:00Z","expires_at":"2026-09-08T18:30:00Z",
-            "markdown":"Fast raw transcript."}
+            "markdown":"Fast raw transcript.","refined":true}
             """
         )])
 
@@ -66,11 +66,13 @@ struct UploadTests {
             sessionID: sessionID,
             audioURL: audioURL,
             durationMilliseconds: 1_250,
-            locale: "en-US"
+            locale: "en-US",
+            refine: true
         )
 
         #expect(result.id == transcriptID)
         #expect(result.markdown == "Fast raw transcript.")
+        #expect(result.refined == true)
         let request = try #require(HTTPStub.shared.recordedRequests.first)
         #expect(request.httpMethod == "POST")
         #expect(request.url?.path == "/v1/transcriptions")
@@ -78,8 +80,68 @@ struct UploadTests {
         #expect(request.value(forHTTPHeaderField: "X-Session-ID") == sessionID.uuidString)
         #expect(request.value(forHTTPHeaderField: "X-Duration-Ms") == "1250")
         #expect(request.value(forHTTPHeaderField: "X-Locale") == "en-US")
+        #expect(request.value(forHTTPHeaderField: "X-Refine") == "true")
         #expect(request.value(forHTTPHeaderField: "Content-Length") == "5")
-        #expect(request.timeoutInterval == 180)
+        #expect(request.timeoutInterval == 360)
+    }
+
+    @Test func immediateTranscriptionSendsCustomRefinementInstructionsAsMultipart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appending(path: "recording.m4a")
+        try Data("audio".utf8).write(to: audioURL)
+        let sessionID = UUID()
+        let transcriptID = UUID()
+        HTTPStub.shared.configure([(
+            201,
+            """
+            {"id":"\(transcriptID)","session_id":"\(sessionID)",
+            "created_at":"2026-09-06T18:30:00Z","expires_at":"2026-09-08T18:30:00Z",
+            "markdown":"Refined transcript.","refined":true}
+            """
+        )])
+
+        _ = try await client().transcribeImmediately(
+            sessionID: sessionID,
+            audioURL: audioURL,
+            durationMilliseconds: 1_250,
+            refine: true,
+            customRefinementInstructions: "Use concise bullet points."
+        )
+
+        let request = try #require(HTTPStub.shared.recordedRequests.first)
+        let contentType = try #require(request.value(forHTTPHeaderField: "Content-Type"))
+        #expect(contentType.hasPrefix("multipart/form-data; boundary=VoicePrompt-"))
+        let body = try #require(HTTPStub.shared.recordedRequestBodies.first)
+        let text = try #require(String(data: body, encoding: .utf8))
+        #expect(text.contains("name=\"audio\"; filename=\"recording.m4a\""))
+        #expect(text.contains("name=\"refinement_instructions\""))
+        #expect(text.contains("Use concise bullet points."))
+        #expect(text.contains("audio"))
+        #expect(request.value(forHTTPHeaderField: "Content-Length") == String(body.count))
+    }
+
+    @Test func immediateTranscriptionRejectsRefinementInstructionsOverLimit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appending(path: "recording.m4a")
+        try Data("audio".utf8).write(to: audioURL)
+        HTTPStub.shared.configure([])
+
+        do {
+            _ = try await client().transcribeImmediately(
+                sessionID: UUID(),
+                audioURL: audioURL,
+                durationMilliseconds: 1_250,
+                refine: true,
+                customRefinementInstructions: String(repeating: "a", count: 4_001)
+            )
+            Issue.record("Expected refinement instruction length validation to fail")
+        } catch APIClient.Error.refinementInstructionsTooLong {
+            #expect(HTTPStub.shared.recordedRequests.isEmpty)
+        }
     }
 
     private func chunk(directory: URL, id: UUID = UUID(), sequence: Int = 0) throws -> ChunkMetadata {

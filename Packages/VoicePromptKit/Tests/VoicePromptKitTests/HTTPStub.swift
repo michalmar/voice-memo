@@ -8,19 +8,23 @@ final class HTTPStub: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [(Int, String)] = []
     private var requests: [URLRequest] = []
+    private var requestBodies: [Data] = []
 
     func configure(_ responses: [(Int, String)]) {
         lock.withLock {
             self.responses = responses
             requests = []
+            requestBodies = []
         }
     }
 
     var recordedRequests: [URLRequest] { lock.withLock { requests } }
+    var recordedRequestBodies: [Data] { lock.withLock { requestBodies } }
 
     func next(for request: URLRequest) throws -> (Int, Data) {
         try lock.withLock {
             requests.append(request)
+            requestBodies.append(Self.body(for: request))
             guard !responses.isEmpty else { throw URLError(.resourceUnavailable) }
             let (status, body) = responses.removeFirst()
             if status == 0 { throw URLError(.notConnectedToInternet) }
@@ -32,6 +36,25 @@ final class HTTPStub: @unchecked Sendable {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         return URLSession(configuration: configuration)
+    }
+
+    private static func body(for request: URLRequest) -> Data {
+        if let body = request.httpBody {
+            return body
+        }
+        guard let stream = request.httpBodyStream else {
+            return Data()
+        }
+        stream.open()
+        defer { stream.close() }
+        var body = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            body.append(contentsOf: buffer.prefix(count))
+        }
+        return body
     }
 
     static func recording(

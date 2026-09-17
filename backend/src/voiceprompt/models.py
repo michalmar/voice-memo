@@ -51,6 +51,7 @@ class TranscriptSummary(BaseModel):
 
 class Transcript(TranscriptSummary):
     markdown: str
+    refined: bool | None = None
 
 
 class TranscriptList(BaseModel):
@@ -77,4 +78,3 @@ class SessionRecord(BaseModel):
 
 class TranscriptRecord(Transcript):
     owner: str
-

@@ -12,9 +12,17 @@ The macOS quick-transcription path is intentionally latency-first. The configura
 global shortcut (`Shift-Command-Space` by default) or the menu-bar action opens a
 compact HUD and records one local M4A file. Stop sends that recording to the
 synchronous `POST /v1/transcriptions` endpoint, which calls MAI-Transcribe-2 and
-stores the verbatim result directly without cleanup. The microphone is released
-before the request begins, so another recording can start while earlier requests
-remain in flight.
+stores the verbatim result directly when refinement is disabled. The HUD's compact
+Refine switch is enabled by default and adds `X-Refine: true`, which runs the same
+Luna cleanup used by the iOS pipeline before the transcript is stored. The
+microphone is released before the request begins, so another recording can start
+while earlier requests remain in flight.
+
+Mac users can also save up to 4,000 characters of optional refinement instructions
+in Settings. Non-empty instructions are sent beside the audio as multipart form
+data and appended to the built-in Luna system prompt at lower priority than its
+accuracy and preservation requirements. Empty instructions retain the raw-audio
+request format and use the built-in prompt unchanged.
 
 Completion uses Azure Web PubSub serverless delivery. The API issues ten-minute,
 user-scoped WebSocket URLs; the worker sends only the transcript identifier to the
@@ -25,7 +33,8 @@ the newest unseen completion.
 ## macOS quick-transcription sequence
 
 The direct Mac path optimizes time-to-clipboard. Audio is not written to Azure Blob
-Storage, no queue message is created, and the cleanup model is not called.
+Storage and no queue message is created. Luna refinement is optional and enabled
+by default.
 
 ```mermaid
 sequenceDiagram
@@ -37,6 +46,7 @@ sequenceDiagram
     participant API as Container Apps API
     participant Convert as FFmpeg conversion
     participant Speech as Foundry Speech<br/>MAI-Transcribe-2
+    participant Luna as Foundry Chat<br/>Luna
     participant Table as Azure Table Storage
     participant Clipboard as macOS clipboard
     participant Target as Previously active app
@@ -66,6 +76,11 @@ sequenceDiagram
         Convert-->>API: 16 kHz mono PCM WAV
         API->>Speech: Transcribe with managed identity<br/>verbatim mode
         Speech-->>API: Raw transcript
+        opt Refine with Luna is enabled
+            API->>Table: Mark session refining
+            API->>Luna: Polish raw transcript
+            Luna-->>API: Copy-ready Markdown
+        end
         API->>Table: Save transcript and mark session completed
         API-->>HUD: 201 Created + saved transcript
         HUD->>Clipboard: Replace clipboard text
@@ -81,7 +96,10 @@ sequenceDiagram
 Every stopped recording owns an independent asynchronous request. The controller
 tracks the number of requests in flight, while permitting one new active recording.
 The HUD can therefore show “Listening” and an earlier-transcription count at the
-same time.
+same time. For requests using Luna, it polls the session status while the synchronous
+request is in flight and changes the HUD from “Transcribing” to “Refining with Luna.”
+The API also marks the returned transcript as refined, which keeps a sparkle badge
+in macOS history and lets the app warn when an older backend does not confirm Luna.
 
 The notification is local: the returned transcript is added to Mac history, marked
 as already copied, placed on `NSPasteboard.general`, optionally inserted into the

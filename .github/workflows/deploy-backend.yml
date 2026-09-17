@@ -149,7 +149,16 @@ jobs:
           grep -q '"status":"ready"' /tmp/ready.json
           curl --fail --silent --show-error \
             "${API_URL%/}/openapi.json?sha=${{ steps.commit.outputs.sha }}" \
-            | grep -q '"/v1/transcriptions"'
+            --output /tmp/openapi.json
+          python - <<'PY'
+          import json
+
+          with open("/tmp/openapi.json") as source:
+              schema = json.load(source)
+          operation = schema["paths"]["/v1/transcriptions"]["post"]
+          assert any(item.get("name") == "X-Refine" for item in operation["parameters"])
+          assert "refined" in schema["components"]["schemas"]["Transcript"]["properties"]
+          PY
 
           api_image=$(az containerapp show \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
