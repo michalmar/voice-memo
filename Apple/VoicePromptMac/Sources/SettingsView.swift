@@ -48,6 +48,15 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if let error = synchronizer.pasteError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                    Button("Dismiss Paste Error") {
+                        synchronizer.dismissPasteError()
+                    }
+                }
                 Text("When enabled and Accessibility access is granted, VoicePrompt returns to the app that was active when recording started and inserts the transcription at the cursor.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -45,6 +45,7 @@ final class CompletionSynchronizer: ObservableObject {
     @Published private(set) var liveError: String?
     @Published private(set) var deletingTranscriptIDs: Set<UUID> = []
     @Published private(set) var deletionError: String?
+    @Published private(set) var pasteError: String?
     private let client: APIClient
     private let credentials: any CredentialProvider
     private let events: any CompletionEventStreaming
@@ -233,9 +234,16 @@ final class CompletionSynchronizer: ObservableObject {
         copy(transcript)
         if defaults.object(forKey: "pasteQuickTranscription") == nil
             || defaults.bool(forKey: "pasteQuickTranscription") {
-            _ = await textPaster.pasteFromClipboard()
+            let result = await textPaster.pasteFromClipboard()
+            pasteError = result.failureMessage
+        } else {
+            pasteError = nil
         }
         await notifications.completed()
+    }
+
+    func dismissPasteError() {
+        pasteError = nil
     }
 
     func delete(_ transcript: Transcript) async {

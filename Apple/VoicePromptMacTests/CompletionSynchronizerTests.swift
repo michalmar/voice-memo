@@ -46,10 +46,11 @@ private final class MemoryClipboard: ClipboardWriting {
 private final class MemoryTextPaster: TextPasting {
     var captureCount = 0
     var pasteCount = 0
+    var result = TextPasteResult.pasted
     func captureTarget() { captureCount += 1 }
-    func pasteFromClipboard() async -> Bool {
+    func pasteFromClipboard() async -> TextPasteResult {
         pasteCount += 1
-        return true
+        return result
     }
 }
 
@@ -275,6 +276,23 @@ struct CompletionSynchronizerTests {
         #expect(h.textPaster.captureCount == 1)
         #expect(h.textPaster.pasteCount == 0)
         #expect(h.clipboard.values == ["Copy only"])
+    }
+
+    @Test func immediateTranscriptReportsDirectPasteFailure() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.textPaster.result = .activationFailed
+        let record = try decodedTranscript(markdown: "Copied after paste failure")
+
+        h.sync.prepareImmediateDelivery()
+        await h.sync.receiveImmediate(record)
+
+        #expect(h.clipboard.values == ["Copied after paste failure"])
+        #expect(h.textPaster.pasteCount == 1)
+        #expect(h.sync.pasteError == TextPasteResult.activationFailed.failureMessage)
+
+        h.sync.dismissPasteError()
+        #expect(h.sync.pasteError == nil)
     }
 
     @Test func cloudDeletionRemovesOnlySelectedRecordWithoutChangingClipboard() async throws {

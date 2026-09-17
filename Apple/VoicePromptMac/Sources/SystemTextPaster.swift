@@ -1,11 +1,38 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import OSLog
+
+enum TextPasteResult: Equatable {
+    case pasted
+    case noTarget
+    case permissionRequired
+    case targetUnavailable
+    case activationFailed
+    case eventCreationFailed
+
+    var failureMessage: String? {
+        switch self {
+        case .pasted:
+            nil
+        case .noTarget:
+            "The transcript was copied, but VoicePrompt could not determine which app should receive it. Keep the cursor in the destination app when starting a recording."
+        case .permissionRequired:
+            "The transcript was copied, but direct paste requires Accessibility access in VoicePrompt Settings."
+        case .targetUnavailable:
+            "The transcript was copied, but the destination app is no longer running."
+        case .activationFailed:
+            "The transcript was copied, but VoicePrompt could not return to the destination app."
+        case .eventCreationFailed:
+            "The transcript was copied, but VoicePrompt could not create the paste keyboard event."
+        }
+    }
+}
 
 @MainActor
 protocol TextPasting {
     func captureTarget()
-    func pasteFromClipboard() async -> Bool
+    func pasteFromClipboard() async -> TextPasteResult
 }
 
 @MainActor
@@ -13,6 +40,10 @@ final class SystemTextPaster: TextPasting {
     private var targetApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var activationObserver: NSObjectProtocol?
+    private let logger = Logger(
+        subsystem: "com.michalmar.voiceprompt.macos",
+        category: "DirectPaste"
+    )
 
     init() {
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -40,29 +71,57 @@ final class SystemTextPaster: TextPasting {
 
     func captureTarget() {
         if let frontmost = NSWorkspace.shared.frontmostApplication,
-           frontmost.bundleIdentifier != Bundle.main.bundleIdentifier {
+           isExternal(frontmost) {
             targetApplication = frontmost
         } else {
             targetApplication = lastExternalApplication
         }
+        if let targetApplication {
+            logger.debug("Captured paste target PID \(targetApplication.processIdentifier)")
+        } else {
+            logger.error("Could not capture a paste target")
+        }
     }
 
-    func pasteFromClipboard() async -> Bool {
-        guard let targetApplication else { return false }
-        guard isAccessibilityTrusted(prompt: true) else { return false }
+    func pasteFromClipboard() async -> TextPasteResult {
+        guard let targetApplication else {
+            logger.error("Paste skipped because no target was captured")
+            return .noTarget
+        }
+        guard !targetApplication.isTerminated else {
+            logger.error("Paste target terminated before delivery")
+            return .targetUnavailable
+        }
+        guard isAccessibilityTrusted(prompt: true) else {
+            logger.error("Paste skipped because Accessibility access is missing")
+            return .permissionRequired
+        }
 
-        targetApplication.activate(options: [])
-        try? await Task.sleep(for: .milliseconds(120))
+        guard await activate(targetApplication) else {
+            logger.error("Paste target did not become active")
+            return .activationFailed
+        }
 
         if pasteUsingAccessibility(into: targetApplication) {
-            return true
+            logger.debug("Pasted through the Accessibility API")
+            return .pasted
         }
-        return pasteUsingKeyboardEvent()
+        guard await pasteUsingKeyboardEvent() else {
+            logger.error("Could not create a Command-V keyboard event")
+            return .eventCreationFailed
+        }
+        logger.debug("Posted Command-V to the active paste target")
+        return .pasted
     }
 
     private func rememberIfExternal(_ application: NSRunningApplication) {
-        guard application.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+        guard isExternal(application) else { return }
         lastExternalApplication = application
+    }
+
+    private func isExternal(_ application: NSRunningApplication) -> Bool {
+        application.bundleIdentifier != Bundle.main.bundleIdentifier
+            && !application.isTerminated
     }
 
     private func isAccessibilityTrusted(prompt: Bool) -> Bool {
@@ -70,6 +129,25 @@ final class SystemTextPaster: TextPasting {
             kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
         ] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
+    }
+
+    private func activate(_ application: NSRunningApplication) async -> Bool {
+        let requested = application.activate(
+            from: NSRunningApplication.current,
+            options: []
+        ) || application.activate(options: [])
+        guard requested else { return false }
+
+        for _ in 0..<20 {
+            if application.isActive
+                || NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    == application.processIdentifier {
+                try? await Task.sleep(for: .milliseconds(50))
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
     }
 
     private func pasteUsingAccessibility(into application: NSRunningApplication) -> Bool {
@@ -100,7 +178,7 @@ final class SystemTextPaster: TextPasting {
         ) == .success
     }
 
-    private func pasteUsingKeyboardEvent() -> Bool {
+    private func pasteUsingKeyboardEvent() async -> Bool {
         guard let source = CGEventSource(stateID: .hidSystemState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
@@ -108,6 +186,7 @@ final class SystemTextPaster: TextPasting {
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
         keyDown.post(tap: .cghidEventTap)
+        try? await Task.sleep(for: .milliseconds(20))
         keyUp.post(tap: .cghidEventTap)
         return true
     }

@@ -62,6 +62,16 @@ struct HistoryMenuView: View {
                 }
                 .accessibilityIdentifier("history-delete-error")
             }
+            if let error = synchronizer.pasteError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                    Button("Dismiss") { synchronizer.dismissPasteError() }
+                }
+                .accessibilityIdentifier("direct-paste-error")
+            }
             Divider()
             if !synchronizer.isSignedIn {
                 Button("Sign in with Microsoft") { Task { await synchronizer.signIn() } }
