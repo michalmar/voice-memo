@@ -18,11 +18,33 @@ Swift package, a FastAPI backend, and private Azure infrastructure.
   private DNS, Managed Identity/RBAC, Web PubSub, and telemetry.
 - `api/openapi.json` — committed API contract.
 
+## Guided deployment and installation
+
+The recommended installation path is the repository's Copilot deployment skill.
+After cloning the repository, open it with GitHub Copilot and enter:
+
+```text
+/deployment-helper go
+```
+
+The helper first asks whether you want the macOS app and backend only, or also
+want the optional iOS app. It then checks prerequisites, configures Entra and the
+Foundry connection, prepares and applies the Azure infrastructure with your
+approval, deploys and verifies the backend, and builds and installs the macOS
+menu-bar app.
+
+You should already be signed in to Azure with resource-creation, role-assignment,
+and app-registration permissions. Interactive sign-in, admin consent, Terraform
+plan approval, Foundry model availability, and macOS privacy permissions remain
+under your control. See the
+[complete setup guide](docs/configuration.md#recommended-copilot-assisted-setup)
+for prerequisites, the manual alternative, and troubleshooting.
+
 ## Data flows
 
 VoicePrompt has two transcription paths. The Mac path prioritizes immediate
-verbatim text, while the iOS path supports long, resilient recordings and produces
-refined Markdown.
+delivery with optional Luna refinement, while the iOS path supports long,
+resilient recordings and produces refined Markdown.
 
 ### Mac quick transcription
 
@@ -39,20 +61,23 @@ flowchart LR
     Stop -->|Cancel| Delete["Delete local audio"]
     Stop -->|Stop| API["POST /v1/transcriptions"]
     API --> MAI["MAI-Transcribe-2"]
-    MAI --> Store["Store transcript<br/>48-hour expiry"]
+    MAI --> Choice{"Refine enabled?"}
+    Choice -->|Yes| Luna["GPT-5.6 Luna"]
+    Choice -->|No| Store["Store transcript<br/>48-hour expiry"]
+    Luna --> Store
     Store --> Response["Return transcript"]
     Response --> Clipboard["Copy to clipboard"]
     Clipboard --> Paste["Paste at saved cursor<br/>when enabled"]
     Response --> Notice["macOS notification"]
 ```
 
-The direct Mac request does not use the cleanup model or Blob Storage. The API
-temporarily converts the request audio to WAV, sends it to the Foundry Speech
-endpoint, stores the verbatim result in Table Storage, and returns it in the same
-HTTP response. That response triggers clipboard delivery and, by default, inserts
-the text at the cursor in the app that was active when recording started. Direct
-paste can be disabled in Mac settings. Web PubSub is not required for this immediate
-path.
+The direct Mac request does not use Blob Storage. The API temporarily converts
+the request audio to WAV, sends it to the Foundry Speech endpoint, and optionally
+runs Luna with the built-in prompt plus the user's Mac-specific instructions.
+The resulting text is stored in Table Storage and returned in the same HTTP
+response. That response triggers clipboard delivery and, by default, inserts the
+text at the cursor in the app that was active when recording started. Direct paste
+can be disabled in Mac settings. Web PubSub is not required for this immediate path.
 
 ### iOS recording to Mac delivery
 
@@ -88,7 +113,8 @@ docker build -t voiceprompt:local backend
 
 On macOS, install XcodeGen, run `make apple-project`, then build the iOS simulator
 and macOS schemes in `Apple/VoicePrompt.xcodeproj`.
-For a local menu-bar app installation, see
+For a guided backend deployment and menu-bar app installation, use
+`/deployment-helper go`. For only the local app build, see
 [Local Mac installation](docs/configuration.md#local-mac-installation).
 
 Development authentication is disabled by default. For local-only API work, copy

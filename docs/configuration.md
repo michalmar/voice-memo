@@ -1,181 +1,353 @@
-# Configuration and registration
+# VoicePrompt setup guide
 
-## Microsoft Entra ID
+This guide explains how to configure and run VoicePrompt for the first time. It
+covers the backend, the macOS app, the iOS app, and manual Azure deployment
+without GitHub Actions.
 
-Use one single-tenant API registration and separate public-client registrations for
-iOS and macOS. No client secret is used by either native application.
+VoicePrompt is not a standalone offline speech recognizer. Every usable setup
+needs the backend and at least one Apple app.
 
-1. In **Microsoft Entra admin center > App registrations**, register
-   `VoicePrompt API` for accounts in this organizational directory only.
-2. Under **Expose an API**, accept the Application ID URI
-   `api://<api-application-client-id>` and add delegated scope
-   `VoicePrompt.Access`. In the app manifest, set `requestedAccessTokenVersion` to
-   `2`. Admin consent is recommended for this private application.
-3. Register `VoicePrompt iOS` as a public client. Add the mobile/desktop redirect
-   URI `msauth.com.michalmar.voiceprompt.ios://auth`, enable public client flows,
-   and grant delegated `VoicePrompt.Access` permission to `VoicePrompt API`.
-4. Register `VoicePrompt macOS` as a public client. Add redirect URI
-   `msauth.com.michalmar.voiceprompt.macos://auth`, enable public client flows,
-   and grant the same delegated API permission.
-5. Record the tenant ID, API application client ID, iOS client ID, macOS client ID,
-   and the intended user's Entra **Object ID**. Grant tenant admin consent.
-6. Configure Terraform:
-   - `entra_tenant_id = "<tenant-id>"`
-   - `entra_audience = "<api-application-client-id>"`
-   - `entra_required_scope = "VoicePrompt.Access"`
-   - `allowed_entra_object_ids = ["<user-object-id>"]`
-7. Copy `Apple/Configuration.xcconfig.example` to an ignored local configuration,
-   fill `ENTRA_TENANT_ID`,
-   `ENTRA_API_SCOPE = api:/$()/<api-application-client-id>/VoicePrompt.Access`,
-   `ENTRA_IOS_CLIENT_ID`, and `ENTRA_MAC_CLIENT_ID`, then apply those build settings
-   to both generated Xcode targets. The checked-in `Apple/project.yml` already
-   selects `Configuration.xcconfig` for Debug and Release in both targets.
+## Recommended Copilot-assisted setup
 
-In `.xcconfig` files, `//` starts a comment, even inside quoted values. The empty
-`$()` expansion above preserves the full `api://...` scope. Use the same pattern
-for HTTPS URLs. Do not add empty Entra settings to the targets in `project.yml`:
-target settings override the values from the configuration file.
+The easiest path from a fresh clone is the repository's `deployment-helper`
+skill. Open the cloned repository with GitHub Copilot and enter:
 
-The clients use Authorization Code with PKCE in `ASWebAuthenticationSession`.
-Refresh tokens are device-only Keychain items. The backend partitions ownership by
-the validated `<tenant-id>:<object-id>` pair and requires the delegated scope.
-When admitting another account, append its Object ID to `allowed_entra_object_ids`
-without removing existing users, then deploy the updated allowlist. Successful
-Microsoft sign-in alone does not grant API access. App users do not need Azure
-Contributor, storage access, or directory administrator roles. Sign in with the
-**same Microsoft account on iPhone and Mac** to synchronize that account's records;
-allowing a second account does not share or merge either account's history.
-
-## iOS transcripts
-
-The Record tab displays the final cleaned-up Markdown after cloud processing.
-Select text, use **Copy** for the entire transcript, or use **Share** to send it
-to another app. The **History** tab lists the signed-in account's transcripts,
-newest first; tap a record to open it. Pull to refresh or use the refresh button.
-History also refreshes when the app returns to the foreground.
-**Delete**, beside Share, immediately deletes the cloud transcript without a
-confirmation dialog, matching the Mac app. Failed deletions display an error and
-can be retried. This removes the record from both devices after syncing, but does
-not remove text already copied or shared.
-
-This uses the same authenticated transcript endpoints as the Mac app, with no
-backend changes. Cloud history expires after 48 hours. The iOS app only keeps
-downloaded text in memory and clears it on sign-out; copy or share anything you
-want to retain. Records deleted on the Mac disappear from iOS after refreshing.
-
-## Azure and Foundry
-
-Authenticate Azure CLI and identify the existing Foundry resource. Transcription
-uses **MAI-Transcribe-2** through the Speech fast transcription REST API. Markdown
-cleanup remains on the existing `cleanup_deployment` (default `gpt-5.6-luna`).
-
-The guide assumes those model deployments already exist; their names are not a
-guarantee of availability in your subscription. If no Foundry resource exists,
-select a supported region and available models before provisioning. A model
-available in an editor or Copilot is not automatically an Azure deployment.
-
-Set `foundry_endpoint` to the account's Azure OpenAI endpoint, such as
-`https://<account>.openai.azure.com`, not the Foundry project URL ending in
-`/api/projects/<project>`. Set `foundry_resource_id` to the parent account's Azure
-resource ID, not the project ID. This endpoint is used only for Markdown cleanup.
-
-Set `speech_endpoint` to the **same resource's custom Speech subdomain**, such as
-`https://<account>.cognitiveservices.azure.com`, and `speech_model` to
-`MAI-Transcribe-2`. This is a Speech model identifier, not an OpenAI deployment
-name. The worker posts multipart `audio` and JSON `definition` fields to
-`/speechtotext/transcriptions:transcribe?api-version=2025-10-15`, with
-`enhancedMode.enabled=true` and `enhancedMode.model=MAI-Transcribe-2`.
-`speech_api_version` controls this version separately from cleanup's OpenAI API.
-
-The worker's user-assigned managed identity (selected by `AZURE_CLIENT_ID`) needs
-**Cognitive Services Speech User** at `foundry_resource_id`. Terraform grants this
-in addition to **Cognitive Services OpenAI User**, which remains necessary for
-cleanup but does not authorize Speech transcription. Requests use a raw
-`Authorization: Bearer <token>` header with the token scope
-`https://cognitiveservices.azure.com/.default`. No Speech keys, client secrets,
-or `aad#resource-id#token` SDK wrapper are used.
-
-iOS continues uploading AAC/M4A. The worker converts each segment to 16 kHz mono
-PCM WAV using FFmpeg because the MAI-specific documentation lists WAV, MP3, and
-FLAC inputs. Conversion uses temporary files that are removed afterward and a
-30-second deadline. The backend image includes FFmpeg; install it locally when
-running the worker or audio tests outside Docker. Transcription uses **automatic
-language identification**: the Speech request omits `locales`, even when an older
-Apple app sends the default `cs-CZ` session metadata. The technical glossary becomes
-`phraseList.phrases`. MAI uses verbatim output so the unchanged Markdown cleanup
-step preserves intent. The old OpenAI previous-segment prompt has no equivalent
-in this Speech request and is not sent. Full text comes from
-`combinedPhrases[].text`, not the duplicated per-segment `phrases` array.
-
-**Migration:** replace `speech_deployment` / `VOICEPROMPT_SPEECH_DEPLOYMENT` with
-`speech_endpoint` / `VOICEPROMPT_SPEECH_ENDPOINT`, and optionally set
-`speech_model` / `VOICEPROMPT_SPEECH_MODEL` and
-`speech_api_version` / `VOICEPROMPT_SPEECH_API_VERSION` to override their defaults.
-Rebuild and deploy the worker image. `worker_container_image` can pin a worker-only
-immutable image without restarting the API or retention-cleanup job; when null it
-uses the shared `container_image`. Apple apps do not need rebuilding.
-
-MAI-Transcribe-2 is **public preview**, without a production SLA. Check the current
-[MAI instructions](https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe?pivots=programming-language-rest),
-[Speech RBAC guidance](https://learn.microsoft.com/azure/ai-services/speech-service/role-based-access-control),
-and [region table](https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=llmspeech).
-As of September 7, 2026, the table did not list Sweden Central for MAI, but a live
-managed-identity request explicitly selecting MAI-Transcribe-2 succeeded on this
-deployment's existing `demo-swe` account. Validate availability on the actual
-resource before switching a worker; do not infer it from ordinary Fast
-Transcription region support.
-
-### Managed-identity sample call
-
-Run this on an Azure host with the workload identity attached, using a sample
-WAV file. `AZURE_CLIENT_ID` selects the user-assigned identity and
-`VOICEPROMPT_SPEECH_ENDPOINT` must contain the resource's custom Speech endpoint.
-Managed identity is not available directly on a local Mac.
-
-```python
-import asyncio
-import json
-import os
-from pathlib import Path
-
-import httpx
-from azure.identity.aio import ManagedIdentityCredential
-
-async def main():
-    async with ManagedIdentityCredential(client_id=os.environ["AZURE_CLIENT_ID"]) as credential:
-        token = await credential.get_token("https://cognitiveservices.azure.com/.default")
-        endpoint = os.environ["VOICEPROMPT_SPEECH_ENDPOINT"].rstrip("/")
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{endpoint}/speechtotext/transcriptions:transcribe",
-                params={"api-version": "2025-10-15"},
-                headers={"Authorization": "Bearer " + token.token},
-                files={
-                    "audio": ("sample.wav", Path("sample.wav").read_bytes(), "audio/wav"),
-                    "definition": (None, json.dumps({
-                        "enhancedMode": {"enabled": True, "model": "MAI-Transcribe-2"},
-                    }), "application/json"),
-                },
-            )
-            response.raise_for_status()
-            print(" ".join(item["text"] for item in response.json()["combinedPhrases"]))
-
-asyncio.run(main())
+```text
+/deployment-helper go
 ```
 
-Cleanup requests omit `temperature` by default because GPT-5.6 Luna rejects a
-zero-temperature override. For a model supporting sampling controls, optionally
-set Terraform's `cleanup_temperature` (or `VOICEPROMPT_CLEANUP_TEMPERATURE` when
-running locally) to a value from 0 to 2. Leave it unset for Luna.
+The helper asks first whether you want:
 
-Copy `infrastructure/terraform.tfvars.example` to the ignored
-`infrastructure/terraform.tfvars` and fill the subscription, region, identity, and
-Foundry values. The deploying account needs Azure resource/RBAC permissions;
-Entra Global Administrator alone does not grant subscription access.
+1. The macOS app and backend only, which is the recommended default.
+2. The macOS and iOS apps with one shared backend.
+3. The iOS app and backend only.
 
-The configuration includes a Basic private container registry with its admin
-account disabled. For the first deployment, bootstrap only the registry and its
-pull identity before publishing the backend image:
+Copilot then performs most of the repeatable work: prerequisite checks, Azure and
+Foundry discovery, local configuration, Entra registration when authorized,
+Terraform planning and deployment, backend image deployment and verification,
+and the selected Apple build.
+
+You remain in control of operations that require credentials, elevated consent,
+cloud-cost approval, or operating-system permissions. In particular, be prepared
+to:
+
+- Be signed in with Azure CLI to the intended tenant and subscription.
+- Approve the proposed Entra registrations and each Terraform apply.
+- Ask a tenant administrator for consent if your account cannot grant it.
+- Deploy or select the required Foundry models if they are not already available.
+- Sign in inside VoicePrompt and grant Apple privacy permissions.
+
+The skill is stored at
+`.agents/skills/deployment-helper/SKILL.md`. It uses the manual process in this
+guide and does not depend on GitHub Actions. If your Copilot environment does not
+load repository skills, follow the same steps manually starting at
+[Choose the setup you want](#1-choose-the-setup-you-want).
+
+## Contents
+
+1. [Choose the setup you want](#1-choose-the-setup-you-want)
+2. [Prerequisites](#2-prerequisites)
+3. [Record the values you will need](#3-record-the-values-you-will-need)
+4. [Configure Microsoft Entra ID](#4-configure-microsoft-entra-id)
+5. [Prepare Microsoft Foundry](#5-prepare-microsoft-foundry)
+6. [Deploy the backend manually](#6-deploy-the-backend-manually)
+7. [Configure the Apple apps](#7-configure-the-apple-apps)
+8. [Install and configure the macOS app](#8-install-and-configure-the-macos-app)
+9. [Run the iOS app](#9-run-the-ios-app)
+10. [Using both apps](#10-using-both-apps)
+11. [Optional local backend development](#11-optional-local-backend-development)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Data, retention, and security](#13-data-retention-and-security)
+
+## 1. Choose the setup you want
+
+| Setup | Backend | API registration | macOS registration | iOS registration |
+|-------|---------|------------------|--------------------|------------------|
+| macOS only | Required | Required | Required | Not required |
+| iOS only | Required | Required | Not required | Required |
+| macOS and iOS | Required | Required | Required | Required |
+
+### macOS only
+
+Choose this if you want the menu-bar app and quick transcription on a Mac.
+
+You need:
+
+1. The Azure backend.
+2. One Microsoft Entra API registration.
+3. One Microsoft Entra public-client registration for macOS.
+4. The macOS app built with those settings.
+
+You do not need to register, build, or install the iOS app.
+
+Mac quick transcription sends one recording directly to the API. It uses
+MAI-Transcribe-2 and, when the **Refine** HUD switch is enabled, GPT-5.6 Luna.
+The current Terraform configuration still provisions the complete backend stack,
+including the worker used by iOS recordings.
+
+### iOS only
+
+Choose this if you want to record and read transcripts on an iPhone without using
+the Mac app.
+
+You need:
+
+1. The complete Azure backend, including the transcription worker.
+2. One Microsoft Entra API registration.
+3. One Microsoft Entra public-client registration for iOS.
+4. The iOS app built with those settings.
+
+You do not need to register or install the macOS app. Completed transcripts remain
+available in the iOS History tab.
+
+### macOS and iOS
+
+Choose this for the complete workflow. Register both native apps and sign in with
+the same Microsoft account on both devices. Each app uses a separate Entra client
+registration, but both request access to the same API.
+
+## 2. Prerequisites
+
+### Azure and Microsoft prerequisites
+
+Have these ready before starting:
+
+- An Azure subscription.
+- Permission to create resource groups, Container Apps, Storage, networking,
+  managed identities, role assignments, Web PubSub, and Container Registry.
+  **Owner**, or **Contributor** plus **User Access Administrator**, is normally
+  sufficient at the target scope.
+- A Microsoft Entra tenant in which you can create app registrations and grant
+  tenant-wide consent. Application Administrator or a similar directory role may
+  be required.
+- A Microsoft account in that tenant for each VoicePrompt user.
+- An existing Microsoft Foundry/Cognitive Services account with:
+  - MAI-Transcribe-2 available for Speech transcription.
+  - A GPT-5.6 Luna deployment, named `gpt-5.6-luna` by default.
+- A supported Azure region for the selected models and infrastructure.
+
+The Terraform configuration references the Foundry account. It does not create
+the Foundry account or deploy the models.
+
+### Local tools
+
+Install:
+
+- Git
+- Azure CLI
+- Terraform 1.9 or later
+- `jq`
+- Xcode with Swift 6.3 or later
+- XcodeGen
+
+On macOS with Homebrew:
+
+```bash
+brew install azure-cli terraform jq xcodegen
+```
+
+ACR builds the backend image in Azure, so Docker is not required for deployment.
+Docker is useful only for optional local image testing.
+
+For local backend tests, install Python 3.12 or later and FFmpeg.
+
+### Apple hardware and accounts
+
+- The Mac app requires macOS 14 or later.
+- The iOS app requires iOS 17 or later.
+- The iOS Simulator does not require a paid Apple Developer account.
+- Installing on your own iPhone requires an Apple Account configured as a
+  Personal Team in Xcode. A free Personal Team works, but its provisioning
+  profile expires after seven days.
+
+## 3. Record the values you will need
+
+Keep a private worksheet with these values:
+
+| Value | Where it comes from |
+|-------|---------------------|
+| Azure subscription ID | Azure subscription |
+| Azure region | Region selected for the backend |
+| Entra tenant ID | Microsoft Entra tenant |
+| API application client ID | VoicePrompt API app registration |
+| Allowed user object ID | Entra user profile |
+| macOS client ID | macOS public-client registration |
+| iOS client ID | iOS public-client registration |
+| Foundry resource ID | Azure resource JSON or resource overview |
+| Foundry OpenAI endpoint | `https://<resource>.openai.azure.com` |
+| Foundry Speech endpoint | `https://<resource>.cognitiveservices.azure.com` |
+| Luna deployment name | Usually `gpt-5.6-luna` |
+
+Do not commit tenant-specific IDs, Terraform state, access tokens, signing
+certificates, or local Apple configuration.
+
+## 4. Configure Microsoft Entra ID
+
+VoicePrompt uses one API registration and a separate public-client registration
+for each Apple platform you intend to use. Native apps use Authorization Code
+with PKCE and do not have client secrets.
+
+### 4.1 Register the API
+
+1. Open **Microsoft Entra admin center > App registrations**.
+2. Select **New registration**.
+3. Name it `VoicePrompt API`.
+4. Select **Accounts in this organizational directory only**.
+5. Complete the registration.
+6. Record its **Application (client) ID** and the tenant ID.
+7. Open **Expose an API**.
+8. Accept the default Application ID URI:
+
+   ```text
+   api://<api-application-client-id>
+   ```
+
+9. Add a delegated scope named:
+
+   ```text
+   VoicePrompt.Access
+   ```
+
+10. In the app manifest, set `requestedAccessTokenVersion` to `2`.
+
+The backend validates the tenant, API audience, delegated scope, and an explicit
+allowlist of user object IDs.
+
+### 4.2 Register the macOS client
+
+Skip this section for an iOS-only setup.
+
+1. Create another app registration named `VoicePrompt macOS`.
+2. Configure it as a public client.
+3. Add this mobile/desktop redirect URI:
+
+   ```text
+   msauth.com.michalmar.voiceprompt.macos://auth
+   ```
+
+4. Enable public client flows.
+5. Under **API permissions**, add delegated permission
+   `VoicePrompt.Access` from `VoicePrompt API`.
+6. Record the macOS registration's client ID.
+
+### 4.3 Register the iOS client
+
+Skip this section for a Mac-only setup.
+
+1. Create another app registration named `VoicePrompt iOS`.
+2. Configure it as a public client.
+3. Add this mobile/desktop redirect URI:
+
+   ```text
+   msauth.com.michalmar.voiceprompt.ios://auth
+   ```
+
+4. Enable public client flows.
+5. Under **API permissions**, add delegated permission
+   `VoicePrompt.Access` from `VoicePrompt API`.
+6. Record the iOS registration's client ID.
+
+### 4.4 Grant consent and allow users
+
+Grant tenant admin consent for the delegated API permission.
+
+Record the **Object ID** of every user allowed to use the backend. These values go
+into Terraform:
+
+```hcl
+allowed_entra_object_ids = [
+  "<first-user-object-id>",
+  "<second-user-object-id>",
+]
+```
+
+Successful Microsoft sign-in does not automatically grant backend access. The
+signed-in user's object ID must also be in this allowlist.
+
+Users of the Apple apps do not need Azure Contributor, Storage, Foundry, or
+directory administrator roles.
+
+## 5. Prepare Microsoft Foundry
+
+VoicePrompt uses two model surfaces on the same Foundry/Cognitive Services
+account:
+
+- Speech endpoint for MAI-Transcribe-2:
+
+  ```text
+  https://<resource>.cognitiveservices.azure.com
+  ```
+
+- Azure OpenAI endpoint for Luna:
+
+  ```text
+  https://<resource>.openai.azure.com
+  ```
+
+Do not use a Foundry project URL ending in `/api/projects/<project>`.
+
+Record the parent Foundry account's full Azure resource ID. Terraform grants the
+backend's managed identity:
+
+- **Cognitive Services Speech User** for transcription.
+- **Cognitive Services OpenAI User** for Luna refinement.
+
+MAI-Transcribe-2 is a preview model and may not be available in every region.
+Confirm model availability on the actual resource before deploying.
+
+## 6. Deploy the backend manually
+
+These steps do not use GitHub Actions. Run them from the repository root.
+
+### 6.1 Sign in to Azure
+
+```bash
+az login
+az account set --subscription "<subscription-id>"
+az account show --output table
+az extension add --name containerapp --upgrade
+```
+
+Use an account with both resource creation and role-assignment permissions.
+
+### 6.2 Create the Terraform configuration
+
+Copy the example:
+
+```bash
+cp infrastructure/terraform.tfvars.example infrastructure/terraform.tfvars
+```
+
+Edit `infrastructure/terraform.tfvars`:
+
+```hcl
+subscription_id          = "<subscription-id>"
+location                 = "<azure-region>"
+resource_group_name      = "rg-voiceprompt-prod"
+
+# This is replaced after the first image build.
+container_image          = "bootstrap-only-not-used"
+
+entra_tenant_id          = "<tenant-id>"
+entra_audience           = "<api-application-client-id>"
+entra_required_scope     = "VoicePrompt.Access"
+allowed_entra_object_ids = ["<allowed-user-object-id>"]
+
+foundry_endpoint         = "https://<resource>.openai.azure.com"
+foundry_resource_id      = "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<resource>"
+speech_endpoint          = "https://<resource>.cognitiveservices.azure.com"
+speech_model             = "MAI-Transcribe-2"
+cleanup_deployment       = "gpt-5.6-luna"
+```
+
+Leave `cleanup_temperature` unset for Luna. The model rejects the zero-temperature
+override used by some older deployments.
+
+### 6.3 Bootstrap the registry and pull identity
+
+The first backend image cannot be built until the registry exists. Initialize
+Terraform and create only the registry, workload identity, pull role, and their
+dependencies:
 
 ```bash
 terraform -chdir=infrastructure init
@@ -188,43 +360,58 @@ terraform -chdir=infrastructure show /tmp/voiceprompt-registry.tfplan
 terraform -chdir=infrastructure apply /tmp/voiceprompt-registry.tfplan
 ```
 
-This targeted bootstrap is a one-time exception: it creates only the registry,
-workload identity, pull role, and their resource-group/naming dependencies. The
-temporary image value must never be used for a full deployment.
+Review the plan before applying it. Do not continue if it deletes or replaces
+unrelated resources.
 
-After the initial bootstrap, backend images are built and deployed by
-`.github/workflows/deploy-backend.yml`. The workflow runs automatically after the
-`CI` workflow succeeds on `main`, and it can also be dispatched manually from
-`main`. ACR performs the build in Azure, so deployment does not depend on a local
-Docker daemon, machine architecture, corporate pip mirror, or local CA bundle.
+### 6.4 Build the first backend image in ACR
 
-The workflow authenticates with GitHub OIDC and requires these non-secret
-repository Actions variables:
+Use a clean, committed working tree so the image tag identifies the code that was
+actually uploaded:
 
-| Variable | Production value |
-|----------|------------------|
-| `AZURE_CLIENT_ID` | Client ID of the existing GitHub OIDC deployment application |
-| `AZURE_TENANT_ID` | `a7b1484c-f66a-496a-b1cf-35631a50396c` |
-| `AZURE_SUBSCRIPTION_ID` | `7bc68c68-f434-49ad-ab3e-b883ec39da86` |
-| `AZURE_RESOURCE_GROUP` | `rg-voiceprompt-prod` |
-| `ACR_NAME` | `crvoiceprompt18ifwf` |
-| `CONTAINER_APP_NAME` | `ca-voiceprompt-api-18ifwf` |
-| `WORKER_JOB_NAME` | `caj-voiceprompt-worker-18ifwf` |
-| `CLEANUP_JOB_NAME` | `caj-voiceprompt-cleanup-18ifwf` |
-| `API_URL` | `https://ca-voiceprompt-api-18ifwf.calmocean-9149bcf8.swedencentral.azurecontainerapps.io` |
+```bash
+git status --short
+```
 
-The Azure application must trust the subject
-`repo:michalmar/voice-memo:ref:refs/heads/main` with audience
-`api://AzureADTokenExchange`. No client secret is stored in GitHub.
+Commit or intentionally resolve any output before continuing.
 
-Each build is tagged with the tested commit SHA, resolved to an immutable digest,
-then deployed to the API, transcription worker, and cleanup job. Terraform ignores
-only those three post-provision image fields; it continues managing configuration,
-identity, networking, scaling, and all other infrastructure.
+Resolve the registry created by Terraform:
 
-Confirm the workload identity's `AcrPull` assignment has propagated, set
-`container_image` to any existing immutable bootstrap image, then review and apply
-the full plan:
+```bash
+REGISTRY_SERVER=$(terraform -chdir=infrastructure output -raw registry_login_server)
+ACR_NAME="${REGISTRY_SERVER%%.*}"
+RESOURCE_GROUP=$(az acr show --name "$ACR_NAME" --query resourceGroup --output tsv)
+TAG="manual-$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+```
+
+Build the image in Azure:
+
+```bash
+az acr build \
+  --resource-group "$RESOURCE_GROUP" \
+  --registry "$ACR_NAME" \
+  --image "voiceprompt:$TAG" \
+  backend
+```
+
+Resolve the immutable digest:
+
+```bash
+DIGEST=$(az acr repository show \
+  --name "$ACR_NAME" \
+  --image "voiceprompt:$TAG" \
+  --query digest \
+  --output tsv)
+
+IMAGE="$REGISTRY_SERVER/voiceprompt@$DIGEST"
+echo "$IMAGE"
+```
+
+The value must contain `@sha256:`. Use the immutable digest, not only the tag.
+
+### 6.5 Create the complete backend
+
+Replace `container_image` in `infrastructure/terraform.tfvars` with the value of
+`$IMAGE`, then run:
 
 ```bash
 terraform -chdir=infrastructure validate
@@ -233,284 +420,418 @@ terraform -chdir=infrastructure show /tmp/voiceprompt.tfplan
 terraform -chdir=infrastructure apply /tmp/voiceprompt.tfplan
 ```
 
-Do not apply if the plan replaces/deletes existing resources or introduces
-unapproved SKUs. Compute uses the Consumption profile and Web PubSub uses Free_F1;
-the Basic registry and three private endpoints have ongoing charges even while
-compute is idle. Obtain approval for those charges. Existing Foundry resources
-are referenced, not recreated.
+The full stack includes:
 
-Storage accounts use the AzureRM `storage.data_plane_available = false` feature,
-and queues and containers use their storage account ID for ARM provisioning.
-Tables use AzAPI ARM resources because AzureRM 4.x still performs data-plane
-table/ACL operations even when configured with `storage_account_id`.
-This avoids key-based availability polling and does not require
-opening the private data plane. Runtime workloads select their user-assigned
-identity with `AZURE_CLIENT_ID`.
-The worker drains available queue messages and exits; new messages trigger new
-job executions rather than leaving an idle worker running until its timeout.
+- Public Container Apps API with private access to backend resources.
+- Container Apps transcription worker job.
+- Retention cleanup job.
+- Private Storage account, Blob container, queues, and tables.
+- Azure Container Registry.
+- Managed identity and role assignments.
+- Web PubSub for completion events.
+- VNet, private endpoints, and private DNS.
+- Application Insights.
 
-Terraform state and plans can contain sensitive values. Keep them out of source
-control and preserve a secure state backup before removing or replacing a local
-checkout.
+This infrastructure has ongoing Azure charges. Review the selected SKUs and your
+organization's approval requirements before applying.
 
-### Point the Apple apps at the backend
+### 6.6 Verify the first deployment
 
-After deployment, obtain the API endpoint with
-`terraform -chdir=infrastructure output -raw api_url`. In the ignored
-`Apple/Configuration.xcconfig`, set:
+Read the API URL:
+
+```bash
+API_URL=$(terraform -chdir=infrastructure output -raw api_url)
+echo "$API_URL"
+```
+
+Check readiness:
+
+```bash
+curl --fail --silent --show-error "$API_URL/health/ready"
+```
+
+Expected response:
+
+```json
+{"status":"ready"}
+```
+
+Check that the deployed API contains Mac refinement support:
+
+```bash
+curl --fail --silent --show-error "$API_URL/openapi.json" \
+  | jq '{
+      refine_header: (
+        .paths["/v1/transcriptions"].post.parameters
+        | any(.name == "X-Refine")
+      ),
+      refined_confirmation: (
+        .components.schemas.Transcript.properties
+        | has("refined")
+      )
+    }'
+```
+
+Both values must be `true`. If they are false, an older API revision is receiving
+traffic.
+
+### 6.7 Deploy later backend updates manually
+
+Terraform intentionally ignores post-provision image changes for the API and two
+jobs. For each later release:
+
+1. Start from a clean, committed working tree.
+2. Build a new image.
+3. Resolve its digest.
+4. Update the API, worker, and cleanup job to the same immutable image.
+5. Verify the live contract.
+
+```bash
+NAMES=$(terraform -chdir=infrastructure output -json resource_names)
+RESOURCE_GROUP=$(jq -r .resource_group <<<"$NAMES")
+API_APP=$(jq -r .api <<<"$NAMES")
+WORKER_JOB=$(jq -r .worker <<<"$NAMES")
+CLEANUP_JOB=$(jq -r .cleanup <<<"$NAMES")
+ACR_NAME=$(jq -r .registry <<<"$NAMES")
+REGISTRY_SERVER=$(terraform -chdir=infrastructure output -raw registry_login_server)
+
+TAG="manual-$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+
+az acr build \
+  --resource-group "$RESOURCE_GROUP" \
+  --registry "$ACR_NAME" \
+  --image "voiceprompt:$TAG" \
+  backend
+
+DIGEST=$(az acr repository show \
+  --name "$ACR_NAME" \
+  --image "voiceprompt:$TAG" \
+  --query digest \
+  --output tsv)
+
+IMAGE="$REGISTRY_SERVER/voiceprompt@$DIGEST"
+
+az containerapp update \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$API_APP" \
+  --image "$IMAGE" \
+  --output none
+
+az containerapp job update \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$WORKER_JOB" \
+  --image "$IMAGE" \
+  --output none
+
+az containerapp job update \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$CLEANUP_JOB" \
+  --image "$IMAGE" \
+  --output none
+```
+
+Wait for the new Container Apps revision to become ready, then repeat the
+readiness and OpenAPI checks from the previous section.
+
+## 7. Configure the Apple apps
+
+Create the ignored local build configuration:
+
+```bash
+cp -n Apple/Configuration.xcconfig.example Apple/Configuration.xcconfig
+```
+
+Edit `Apple/Configuration.xcconfig`:
 
 ```text
+ENTRA_TENANT_ID = <tenant-id>
+ENTRA_IOS_CLIENT_ID = <ios-client-id>
+ENTRA_MAC_CLIENT_ID = <macos-client-id>
+ENTRA_API_SCOPE = api:/$()/<api-application-client-id>/VoicePrompt.Access
 BACKEND_URL = https:/$()/<your-api-hostname>/
 ```
 
-Rebuild and reinstall the apps after changing configuration. Both apps read this
-URL from their built Info.plist; an existing `backendURL` UserDefaults value or
-Xcode launch argument takes precedence. The example's `voiceprompt.invalid` URL
-is deliberately unusable: Entra sign-in can be configured independently, but
-upload and transcription require a deployed backend.
-Restart the macOS app after editing its Backend URL in Settings.
-The Mac app automatically removes a saved `voiceprompt.invalid` placeholder so it
-cannot override a newly configured build. Deliberately configured custom URLs are
-preserved.
+The empty `$()` is required because `//` starts a comment in an `.xcconfig` file.
+It allows Xcode to produce the intended `api://` and `https://` values.
 
-### Where recordings and transcripts live
+For a Mac-only build, `ENTRA_IOS_CLIENT_ID` can remain a placeholder because the
+iOS target is not built. For an iOS-only build, the macOS client ID can remain a
+placeholder. The tenant, API scope, backend URL, and client ID for the app being
+built must be real.
 
-The API's `VOICEPROMPT_STORAGE_ACCOUNT_NAME` identifies the private Azure Storage
-account. Audio uploads go to the **audio** blob container, partitioned by owner and
-recording/session ID. Session state and intermediate segment text live in the
-**sessions** table. Completed transcripts are rows in the **transcripts** table:
-the row's JSON `payload` contains `markdown`, `session_id`, `created_at`, and
-`expires_at`. The transcript UUID is the row key. The **transcriptexpiry** table
-indexes cleanup; completed transcripts are retained for **48 hours**.
+The Apple apps read these values from their built `Info.plist`. Rebuild and
+reinstall after changing the file.
 
-Storage public access is disabled. There is no public Markdown download URL.
-Signed-in apps retrieve records using `GET /v1/transcripts` and
-`GET /v1/transcripts/{transcript_id}` on the configured backend.
+<a id="local-mac-installation"></a>
 
-## Apple signing
+## 8. Install and configure the macOS app
 
-The shared Swift package requires Swift 6.3 or newer. CI uses Xcode 26.5 on macOS
-26 with an explicitly selected toolchain rather than the runner's default Xcode.
+Skip this section for an iOS-only setup.
 
-### Local Mac installation
+### 8.1 Build and install
 
-For updates with an existing `Apple/Configuration.xcconfig`, quit VoicePrompt from
-its menu-bar menu and run `./scripts/install-macos.sh` from the repository root.
-The script regenerates the Xcode project, builds with local ad-hoc signing, replaces
-`~/Applications/VoicePromptMac.app`, and launches it without deleting preferences or
-Keychain credentials. Build products stay in `~/Library/Developer/Xcode/DerivedData/VoicePrompt`.
-
-Use macOS 14 or later, Xcode with Swift 6.3 or later, and XcodeGen
-(`brew install xcodegen` if it is missing). A local, ad-hoc-signed build does not
-require a paid Apple Developer account or notarization.
-
-From the repository root, preserve any existing local configuration, generate the
-project, and build only the Mac app:
+The easiest local installation is:
 
 ```bash
-if [ ! -f Apple/Configuration.xcconfig ]; then
-  cp Apple/Configuration.xcconfig.example Apple/Configuration.xcconfig
-fi
+./scripts/install-macos.sh
+```
+
+The script:
+
+1. Regenerates the Xcode project.
+2. Builds the macOS app with local ad-hoc signing.
+3. Installs it at `~/Applications/VoicePromptMac.app`.
+4. Launches it as a menu-bar app.
+
+Quit an existing VoicePrompt process from its menu before rerunning the installer.
+A paid Apple Developer account is not required for this local build.
+
+To build manually:
+
+```bash
 make apple-project
 xcodebuild -project Apple/VoicePrompt.xcodeproj \
-  -scheme VoicePromptMac -configuration Debug \
-  -destination 'platform=macOS' -derivedDataPath Apple/build \
-  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES build
-```
-
-Quit any existing VoicePrompt instance before installing or updating it:
-
-```bash
-mkdir -p "$HOME/Applications"
-ditto Apple/build/Build/Products/Debug/VoicePromptMac.app \
-  "$HOME/Applications/VoicePromptMac.app"
-open "$HOME/Applications/VoicePromptMac.app"
-```
-
-VoicePrompt runs in the **menu bar**, not the Dock. Click its icon and choose
-**Settings...** to open the separate settings window in front of other windows.
-The scrollable panel under the icon lists all loaded transcripts from the last
-48 hours, newest first.
-Installation and launch work without
-backend configuration, but the app remains **Offline**: sign-in, transcript sync,
-and automatic clipboard delivery require the backend and Entra setup above.
-The Mac app also supports quick transcription with a configurable global shortcut,
-defaulting to **Shift-Command-Space**, and a **Start Quick Transcription** action in
-the menu-bar panel. Change or disable the shortcut in **VoicePrompt Settings >
-Quick Transcription**. Starting opens a compact listening HUD immediately. **Stop**
-releases the microphone and starts a latency-first MAI-Transcribe-2 request;
-**Cancel** discards the local
-recording without transcribing. Completed verbatim text is stored in the same
-48-hour cloud history and copied to the clipboard. **Paste text into the active
-app** is enabled by default in the same settings section. VoicePrompt remembers the
-foreground application when recording starts, returns to it when transcription
-finishes, and inserts the text at its cursor. macOS requests Accessibility
-permission on first use. Disable the toggle to retain clipboard delivery without
-automatic insertion. Cleanup/refinement is deliberately skipped for this path.
-Multiple stopped recordings may transcribe concurrently
-while a new recording is in progress. A single quick recording is capped at 64 MiB
-by default (roughly three hours at the app's 48 kbit/s capture rate) through
-`VOICEPROMPT_MAX_IMMEDIATE_RECORDING_BYTES`.
-
-Sign in with Microsoft **on the Mac as well as on iOS**; each app uses its own
-client registration and Keychain. Settings shows the Microsoft login,
-API connection, live-update connection, and any actionable errors separately.
-The app refreshes history after sign-in and WebSocket reconnects, and polls every
-minute to recover missed completion events. A WebSocket outage does not prevent
-API history refresh. **Sync Now** refreshes immediately.
-
-Click a transcript row to copy that record's **full Markdown** to the clipboard,
-including text beyond its shortened preview. Each entry includes its creation
-date and time and briefly shows **Copied**. Older records and repeated clicks can
-be copied again; automatic delivery deduplication does not disable manual copying.
-
-The separate **trash button** on each row immediately starts cloud deletion without
-a confirmation dialog. This action cannot be undone.
-This calls the existing authenticated `DELETE /v1/transcripts/{transcript_id}`
-endpoint: it permanently removes the signed-in user's cloud transcript, not just
-the local row. Other Macs using the same account remove it on their next sync.
-The row remains visible while deletion is pending; failures show an error and allow
-retry. A record that was already deleted or expired is removed locally as well.
-Deletion does not clear text already copied to the clipboard or copies saved
-elsewhere. It removes the transcript, not the recording session's operational
-metadata; normal processing already deletes uploaded audio and intermediate text.
-No backend deployment or new permissions are needed for this client feature.
-
-After changing app configuration or updating source, rebuild and replace the
-installed app as above: launching an older copy does not pick up new Info.plist
-settings. Mac regression tests can be run without a paid developer account:
-
-```bash
-make apple-project
-xcodebuild -project Apple/VoicePrompt.xcodeproj -scheme VoicePromptMac \
+  -scheme VoicePromptMac \
+  -configuration Debug \
   -destination 'platform=macOS' \
-  -derivedDataPath "$HOME/Library/Developer/Xcode/DerivedData/VoicePrompt" \
-  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES test
+  -derivedDataPath Apple/build \
+  CODE_SIGN_IDENTITY=- \
+  CODE_SIGNING_ALLOWED=YES \
+  build
 ```
 
-### Local iOS Simulator testing
+### 8.2 First launch
 
-Select the **VoicePromptIOS** scheme and a named **iOS Simulator** destination
-(for example, **iPhone 17**) in Xcode's toolbar, then choose **Product > Run**
-(`Cmd+R`). Simulator runs do not require a Personal Team or a development
-certificate. A connected physical iPhone is a different destination: if Xcode
-reports that a development team is required, check that the selected destination
-is actually a simulator.
+1. Find VoicePrompt in the menu bar, not the Dock.
+2. Open **Settings**.
+3. Confirm the backend URL.
+4. Sign in with the allowed Microsoft account.
+5. Configure or disable the global shortcut.
+6. Leave **Paste text into the active app** enabled if you want automatic paste.
+7. Optionally add custom Luna instructions in the **Luna Refinement** text area.
 
-After authentication, the app shows **Signed in with Microsoft** and **Sign Out**;
-it restores this status from Keychain on launch. Canceled or failed sign-ins show
-their reason. **Cloud ready** means the API is reachable, not that the account is
-authorized.
+Custom instructions:
 
-Recording works before sign-in and while offline. Stopped recordings remain saved
-on the device until the server acknowledges the complete upload. Use **Retry saved
-uploads** after signing in or reconnecting. Rebuilding/reinstalling over the existing
-simulator app preserves its recordings; the queue resolves audio paths against the
-current sandbox rather than keeping obsolete container paths. Do not uninstall the
-app to troubleshoot uploads, since uninstalling deletes its local recordings.
+- Are limited to 4,000 characters.
+- Are added to the built-in Luna prompt rather than replacing it.
+- Apply only to Mac quick transcriptions when **Refine** is enabled in the HUD.
+- Can be empty. Empty content uses the built-in refinement prompt unchanged.
 
-Uploads display segment progress and actionable failures. Successfully uploaded
-recordings move through transcription to **Complete**; cloud failures are shown
-instead of leaving an indefinite spinner. If processing takes longer than about
-three minutes, use **Check processing status**. Starting another recording does not
-cancel processing in the cloud.
+### 8.3 Permissions
 
-Run the iOS lifecycle regression tests with:
+macOS asks for:
+
+- **Microphone** permission to record.
+- **Accessibility** permission when automatic paste is first used.
+
+Accessibility permission is not required if you only want the transcript copied
+to the clipboard.
+
+### 8.4 Use quick transcription
+
+1. Press the configured shortcut, Shift-Command-Space by default, or select
+   **Start Quick Transcription** from the menu.
+2. Confirm the compact **Refine** switch is in the desired state.
+3. Speak.
+4. Select **Stop** to transcribe, or **Cancel** to discard the local recording.
+
+When refinement is enabled:
+
+- The HUD displays a spinner with a sparkle.
+- The title changes to **Refining with Luna** when the backend reports that phase.
+- A completed, backend-confirmed refined transcript keeps a sparkle in history.
+
+If the app says the backend did not confirm refinement, verify the OpenAPI contract
+from section 6.6. That warning normally means an older backend revision is still
+receiving traffic.
+
+## 9. Run the iOS app
+
+Skip this section for a Mac-only setup.
+
+### 9.1 iOS Simulator
 
 ```bash
 make apple-project
-xcodebuild -project Apple/VoicePrompt.xcodeproj -scheme VoicePromptIOS \
-  -destination 'platform=iOS Simulator,name=iPhone 17' \
-  -derivedDataPath "$HOME/Library/Developer/Xcode/DerivedData/VoicePrompt" \
-  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES test
+open Apple/VoicePrompt.xcodeproj
 ```
 
-Keep test build products outside macOS-protected folders such as Documents:
-the simulator test loader needs access to the injected test libraries. Keep code
-signing enabled when running the simulator app; unsigned builds cannot access its
-sign-in Keychain. Local ad-hoc signing (`CODE_SIGN_IDENTITY=-`) needs no paid
-developer membership or certificate.
+In Xcode:
 
-### Local iPhone testing with a free Personal Team
+1. Select the **VoicePromptIOS** scheme.
+2. Select an iOS 17 or later simulator.
+3. Choose **Product > Run**.
+4. Allow microphone access.
+5. Sign in with an allowed Microsoft account.
 
-Running on your own iPhone from Xcode uses **development signing**, not App Store
-or ad-hoc distribution. A free Apple Account (shown as a **Personal Team** in Xcode)
-is sufficient. You do not need paid Apple Developer Program membership, an App Store
-Connect app, TestFlight, an exported IPA, or notarization. Developer Mode allows
-development-signed apps to run; it does not remove the signing requirement.
+The simulator does not require a paid Apple Developer account.
 
-The iOS app uses its own sandbox and Keychain, not a shared App Group. Its
-entitlements file is intentionally empty: App Groups are unavailable to free
-Personal Teams and are unnecessary here. Microphone permission and Background
-Modes > Audio are already declared in `Apple/VoicePromptIOS/Info.plist`.
+### 9.2 Physical iPhone with a free Personal Team
 
-1. Open Xcode and add your Apple Account under **Xcode > Settings > Accounts**
-   (called **Apple Accounts** in some versions). Accept any developer agreements
-   Xcode requests.
-2. Install XcodeGen if needed with `brew install xcodegen`. From the repository
-   root, create the ignored local configuration and generate/open the project:
+1. Add your Apple Account under **Xcode > Settings > Accounts**.
+2. Connect and unlock the iPhone.
+3. Trust the Mac when prompted.
+4. Enable **Settings > Privacy & Security > Developer Mode** on the iPhone.
+5. In Xcode, select **VoicePromptIOS > Signing & Capabilities**.
+6. Keep automatic signing enabled and select your Personal Team.
+7. Select the connected iPhone and run the app.
+8. Trust the development certificate on the iPhone if requested.
 
-   ```bash
-   cp -n Apple/Configuration.xcconfig.example Apple/Configuration.xcconfig
-   make apple-project
-   open Apple/VoicePrompt.xcodeproj
-   ```
+A free Personal Team profile expires after seven days. Rebuild over the installed
+app to renew it. Do not uninstall the app when troubleshooting pending uploads,
+because uninstalling deletes its locally queued recordings.
 
-   `cp -n` preserves an existing configuration. Fill the Entra values as described
-   above when configuring sign-in; placeholder values are not working credentials.
-3. Connect an unlocked iPhone running **iOS 17 or later** to the Mac using a cable.
-   Tap **Trust This Computer** if prompted, and let Xcode pair with the phone in its
-   device manager. On the iPhone, enable **Settings > Privacy & Security > Developer
-   Mode**, restart, and confirm enabling it after restart. If the setting is
-   missing, initiate pairing in Xcode first.
-4. In Xcode's project navigator, select the **VoicePrompt** project, then
-   **TARGETS > VoicePromptIOS > Signing & Capabilities**. Keep **Automatically
-   manage signing** enabled and select your **Personal Team**. Leave
-   `com.michalmar.voiceprompt.ios` as the bundle identifier unless Xcode says it is
-   unavailable. Xcode manages the development certificate, device registration,
-   and provisioning profile; allow network access to Apple's services. You do
-   not need to configure the macOS target to run the iOS app.
-5. Select the **VoicePromptIOS** scheme and your connected iPhone as the run
-   destination, then choose **Product > Run** (`Cmd+R`). Use the normal Debug/Run
-   workflow, not Archive/Distribute App. If iOS reports an untrusted developer,
-   trust your developer entry under **Settings > General > VPN & Device
-   Management**, then run again. Allow microphone access when the app asks.
+If the bundle identifier is unavailable, choose a unique bundle identifier and
+update all matching iOS callback schemes in:
 
-With a free Personal Team, provisioning profiles expire after **7 days**. Rebuild
-and reinstall from Xcode to renew them; there is no need to delete the app first.
-Once installed and trusted, the app can run without the cable until its profile
-expires. Sign-in, upload, and transcription still require the separate Entra and
-backend configuration; successful signing alone does not configure those services.
+- `Apple/project.yml`
+- `Apple/VoicePromptIOS/Info.plist`
+- `Apple/VoicePromptIOS/Sources/VoicePromptIOSApp.swift`
+- The Entra iOS redirect URI
 
-Microphone capture uses the `.record` audio-session category with `.default` mode
-and Bluetooth HFP input support. The playback-oriented `.spokenAudio` mode is not
-appropriate for recording: an incompatible category/mode combination can fail with
-`OSStatus -50` on a physical iPhone even when the simulator works. Rebuild and
-reinstall the corrected app over the existing copy; changing Microsoft permissions
-does not fix an audio-session configuration error.
+## 10. Using both apps
 
-XcodeGen recreates the project, so a Team selected only in Xcode may be lost after
-`make apple-project`. To persist that choice locally, add
-`DEVELOPMENT_TEAM = <your-team-id>` to the ignored `Apple/Configuration.xcconfig`
-using the Team ID shown in Xcode. Do not commit account-specific signing settings
-or certificates.
+Sign in with the same Microsoft account on iOS and macOS.
 
-If the bundle identifier is unavailable, set a unique
-`PRODUCT_BUNDLE_IDENTIFIER` for `VoicePromptIOS` in `Apple/project.yml` and regenerate
-the project; changing only `bundleIdPrefix` does not override that explicit value.
-If you also rename the `msauth` callback scheme, update the URL scheme in
-`Apple/VoicePromptIOS/Info.plist` and the scheme portion of `redirectURI` in
-`Apple/VoicePromptIOS/Sources/VoicePromptIOSApp.swift`, then register that complete
-redirect URI in the Entra iOS app registration.
+- iOS uploads resilient 30-second audio segments.
+- The worker transcribes the segments and Luna refines the final Markdown.
+- Both apps can display the resulting transcript.
+- The Mac can receive completion events, copy the result, and show notifications.
+- History is retained for 48 hours by default.
+- Deleting a transcript from either app removes it from cloud history for both
+  devices after synchronization.
 
-Apple references: [Personal Team limits](https://developer.apple.com/help/account/basics/about-your-developer-account)
-and [enabling Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device).
+Separate allowed accounts have separate histories. Adding another user to the
+allowlist does not merge or share transcripts.
 
-### Distribution later (not needed for the steps above)
+## 11. Optional local backend development
 
-Ad-hoc iOS distribution requires paid Apple Developer Program membership and
-registered destination devices, but does not require an App Store release.
-Development/ad-hoc apps expire with their provisioning profiles and cannot be
-installed unsigned. macOS Developer ID signing and notarization are separate from
-iPhone development; they require the team's Developer ID Application certificate
-and notarization credentials when distributing the Mac app outside the App Store.
+Production authentication is enabled by default. For local backend-only work:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e 'backend[test]'
+cp backend/.env.example backend/.env
+```
+
+Set:
+
+```text
+VOICEPROMPT_ENVIRONMENT=development
+VOICEPROMPT_ALLOW_DEVELOPMENT_AUTH=true
+```
+
+Development tokens use the `dev:` prefix. Never enable development authentication
+in a deployed or production environment.
+
+Run tests:
+
+```bash
+.venv/bin/python -m pytest backend/tests
+(cd Packages/VoicePromptKit && swift test)
+```
+
+Run the API locally:
+
+```bash
+.venv/bin/uvicorn voiceprompt.app:app \
+  --app-dir backend/src \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+The in-memory development configuration is useful for API development, but real
+Speech and Luna calls still require correctly configured Azure endpoints and
+credentials.
+
+## 12. Troubleshooting
+
+### The app is offline
+
+- Check `BACKEND_URL`.
+- Confirm `/health/ready` returns HTTP 200.
+- Rebuild the Apple app after changing `Configuration.xcconfig`.
+- On macOS, a URL saved in Settings overrides the bundled URL until changed.
+
+### Microsoft sign-in succeeds but the API returns 403
+
+- Confirm the native app has delegated `VoicePrompt.Access`.
+- Grant admin consent.
+- Confirm the user object ID is in `allowed_entra_object_ids`.
+- Confirm the API audience matches the API application client ID.
+
+### The Mac says refinement was not confirmed
+
+The Mac sent a refinement request, but the response did not contain the
+backend-confirmed `refined` field.
+
+Check:
+
+```bash
+curl --silent "$API_URL/openapi.json" \
+  | jq '.components.schemas.Transcript.properties.refined'
+```
+
+If the result is `null`, deploy the latest backend image and wait for Container
+Apps traffic to move to the new revision.
+
+### Custom Luna instructions are ignored
+
+- Confirm the HUD **Refine** switch is enabled.
+- Confirm the text is 4,000 characters or fewer.
+- Confirm the deployed backend includes `python-multipart`.
+- Confirm the latest API image is serving traffic.
+- Leave the field empty to verify that the built-in prompt still works.
+
+### Transcription works but Luna fails
+
+- Confirm the Luna deployment name.
+- Confirm the Foundry OpenAI endpoint.
+- Confirm **Cognitive Services OpenAI User** is assigned to the workload identity.
+- Leave `cleanup_temperature` unset for GPT-5.6 Luna.
+- Inspect API or worker logs in Azure.
+
+### MAI transcription fails
+
+- Confirm the custom Speech endpoint.
+- Confirm MAI-Transcribe-2 is available on the resource.
+- Confirm **Cognitive Services Speech User** is assigned to the workload identity.
+- Confirm the backend image contains FFmpeg.
+
+### Inspect Container Apps
+
+```bash
+NAMES=$(terraform -chdir=infrastructure output -json resource_names)
+RESOURCE_GROUP=$(jq -r .resource_group <<<"$NAMES")
+API_APP=$(jq -r .api <<<"$NAMES")
+
+az containerapp show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$API_APP" \
+  --output table
+
+az containerapp logs show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$API_APP" \
+  --follow
+```
+
+## 13. Data, retention, and security
+
+- Audio, session data, and transcripts are partitioned by the validated Entra
+  tenant and user object ID.
+- iOS audio segments are stored temporarily in the private Blob container.
+- Mac quick-transcription audio is sent directly to the API and is not placed in
+  Blob Storage.
+- Completed transcripts are stored in the private `transcripts` table.
+- Transcripts expire after 48 hours by default.
+- Storage public access is disabled.
+- Runtime services use managed identity; Apple apps never receive Azure service
+  credentials.
+- Refresh tokens are stored in each device's Keychain.
+- Terraform state and plan files can contain sensitive values. Store and back
+  them up securely.
+
+The backend image includes FFmpeg and uses managed identity for Speech, Luna,
+Storage, Queue, Table, Web PubSub, and registry access. Do not add service keys or
+client secrets to the repository.

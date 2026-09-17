@@ -147,10 +147,11 @@ jobs:
             sleep 10
           done
           grep -q '"status":"ready"' /tmp/ready.json
-          curl --fail --silent --show-error \
-            "${API_URL%/}/openapi.json?sha=${{ steps.commit.outputs.sha }}" \
-            --output /tmp/openapi.json
-          python - <<'PY'
+          for attempt in {1..12}; do
+            curl --fail --silent --show-error \
+              "${API_URL%/}/openapi.json?sha=${{ steps.commit.outputs.sha }}&attempt=${attempt}" \
+              --output /tmp/openapi.json
+            if python - <<'PY'
           import json
 
           with open("/tmp/openapi.json") as source:
@@ -159,6 +160,15 @@ jobs:
           assert any(item.get("name") == "X-Refine" for item in operation["parameters"])
           assert "refined" in schema["components"]["schemas"]["Transcript"]["properties"]
           PY
+            then
+              break
+            fi
+            if [[ "${attempt}" == "12" ]]; then
+              echo "::error::Deployed API contract did not become active."
+              exit 1
+            fi
+            sleep 10
+          done
 
           api_image=$(az containerapp show \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
