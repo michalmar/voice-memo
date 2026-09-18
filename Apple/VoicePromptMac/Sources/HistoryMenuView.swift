@@ -88,6 +88,11 @@ struct HistoryMenuView: View {
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
             }
+            Text(AppBuildInfo.current.displayText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .accessibilityIdentifier("app-build-info")
         }
         .padding(16)
         .frame(width: 480)

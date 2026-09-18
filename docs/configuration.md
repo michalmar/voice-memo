@@ -653,6 +653,17 @@ If the app says the backend did not confirm refinement, verify the OpenAPI contr
 from section 6.6. That warning normally means an older backend revision is still
 receiving traffic.
 
+### 8.5 Identify the installed Mac build
+
+The menu-bar panel footer shows **Version 1.0 (Build 1)** by default. The same
+values are available separately in **Settings > About VoicePrompt**, and can be
+selected and copied. These describe the installed Mac app, not the Azure backend.
+
+The values come from the app bundle. Set `MARKETING_VERSION` and
+`CURRENT_PROJECT_VERSION` under the `VoicePromptMac` target in `Apple/project.yml`,
+then rebuild and reinstall to change them. Build numbers are explicit release
+metadata; rebuilding alone does not automatically increment them.
+
 ## 9. Run the iOS app
 
 Skip this section for a Mac-only setup.

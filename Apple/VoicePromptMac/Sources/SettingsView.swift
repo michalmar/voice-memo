@@ -157,6 +157,17 @@ struct SettingsView: View {
                 Button("Sync Now") { Task { await synchronizer.reconcile() } }
                     .disabled(synchronizer.isSyncing || synchronizer.isSigningIn)
             }
+
+            Section("About VoicePrompt") {
+                LabeledContent("Version") {
+                    Text(AppBuildInfo.current.version)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Build") {
+                    Text(AppBuildInfo.current.build)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .onAppear {
             refreshAccessibilityStatus()
