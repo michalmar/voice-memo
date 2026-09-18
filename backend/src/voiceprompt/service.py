@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from typing import Protocol
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -12,9 +13,13 @@ from .models import (
     SessionCreate,
     SessionRecord,
     SessionStatus,
+    TranscriptionCheckpoint,
     TranscriptRecord,
 )
 from .repository import Repository
+
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechTranscriber(Protocol):
@@ -144,25 +149,37 @@ class SessionService:
             SessionCreate(id=session_id, audio_format=audio_format, locale=locale),
         )
         session.status = SessionStatus.TRANSCRIBING
+        session.error_code = None
         await self.repository.save_session(session)
+        failure_code = "speech_failed"
+        checkpoint: TranscriptionCheckpoint | None = None
         try:
             markdown = await speech.transcribe(audio, locale, None)
+            if refine:
+                failure_code = "checkpoint_persistence_failed"
+                now = datetime.now(UTC)
+                checkpoint = TranscriptionCheckpoint(
+                    session_id=session.id,
+                    owner=session.owner,
+                    markdown=markdown,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=self.settings.transcript_ttl_hours),
+                )
+                await self.repository.save_transcription_checkpoint(checkpoint)
+                session.status = SessionStatus.REFINING
+                await self.repository.save_session(session)
+                failure_code = "refinement_failed"
+                markdown = await refinement.refine(markdown, refinement_instructions)
+            failure_code = "transcript_persistence_failed"
+            transcript = await self.create_transcript(session, markdown, refined=refine)
+            if checkpoint is not None:
+                await self.repository.delete_transcription_checkpoint(checkpoint)
+            session.status = SessionStatus.COMPLETED
+            await self.repository.save_session(session)
+            return transcript
         except Exception:
+            logger.exception("Immediate transcription %s failed: %s", session_id, failure_code)
             session.status = SessionStatus.FAILED
-            session.error_code = "speech_failed"
+            session.error_code = failure_code
             await self.repository.save_session(session)
             raise
-        if refine:
-            session.status = SessionStatus.REFINING
-            await self.repository.save_session(session)
-            try:
-                markdown = await refinement.refine(markdown, refinement_instructions)
-            except Exception:
-                session.status = SessionStatus.FAILED
-                session.error_code = "refinement_failed"
-                await self.repository.save_session(session)
-                raise
-        transcript = await self.create_transcript(session, markdown, refined=refine)
-        session.status = SessionStatus.COMPLETED
-        await self.repository.save_session(session)
-        return transcript

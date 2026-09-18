@@ -6,7 +6,7 @@ protocol QuickRecording: Sendable {
         meterChanged: @escaping @MainActor @Sendable (QuickRecordingEngine.MeterReading) -> Void
     ) async throws
     func stop() async throws -> QuickRecordingEngine.Result
-    func cancel() async
+    func cancel() async throws
 }
 
 actor QuickRecordingEngine: QuickRecording {
@@ -14,6 +14,7 @@ actor QuickRecordingEngine: QuickRecording {
         case microphoneDenied
         case couldNotRecord
         case notRecording
+        case cleanupFailed(fileURL: URL, underlying: any Error)
 
         var errorDescription: String? {
             switch self {
@@ -23,6 +24,8 @@ actor QuickRecordingEngine: QuickRecording {
                 return "VoicePrompt could not start the microphone."
             case .notRecording:
                 return "There is no active recording."
+            case let .cleanupFailed(fileURL, underlying):
+                return "The audio file could not be deleted: \(underlying.localizedDescription)\nAudio saved at: \(fileURL.path)"
             }
         }
     }
@@ -97,16 +100,22 @@ actor QuickRecordingEngine: QuickRecording {
         )
     }
 
-    func cancel() {
+    func cancel() throws {
         pendingStartID = nil
         meterTask?.cancel()
         meterTask = nil
         recorder?.stop()
-        if let url = recorder?.url {
-            try? FileManager.default.removeItem(at: url)
+        defer {
+            recorder = nil
+            sessionID = nil
         }
-        recorder = nil
-        sessionID = nil
+        if let url = recorder?.url {
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                throw RecordingError.cleanupFailed(fileURL: url, underlying: error)
+            }
+        }
     }
 
     private func meterReading() -> MeterReading? {

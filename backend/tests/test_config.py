@@ -27,3 +27,17 @@ def test_allowlist_rejects_malformed_json(monkeypatch):
     monkeypatch.setenv("VOICEPROMPT_ALLOWED_ENTRA_OBJECT_IDS", '["user-a"')
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("hours", [0, -1, 1.5])
+def test_transcript_retention_requires_positive_whole_hours(hours):
+    with pytest.raises(ValidationError):
+        Settings(transcript_ttl_hours=hours)
+
+
+def test_transcript_storage_configuration(monkeypatch):
+    monkeypatch.setenv("VOICEPROMPT_TRANSCRIPTS_CONTAINER", "private-transcripts")
+    monkeypatch.setenv("VOICEPROMPT_TRANSCRIPT_TTL_HOURS", "72")
+    settings = Settings(_env_file=None)
+    assert settings.transcripts_container == "private-transcripts"
+    assert settings.transcript_ttl_hours == 72

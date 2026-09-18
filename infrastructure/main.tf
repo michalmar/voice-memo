@@ -124,6 +124,12 @@ resource "azurerm_storage_container" "audio" {
   container_access_type = "private"
 }
 
+resource "azurerm_storage_container" "transcripts" {
+  name                  = "transcripts"
+  storage_account_id    = azurerm_storage_account.main.id
+  container_access_type = "private"
+}
+
 resource "azurerm_storage_queue" "work" {
   name               = "voice-work"
   storage_account_id = azurerm_storage_account.main.id
@@ -158,6 +164,17 @@ resource "azurerm_storage_management_policy" "cleanup" {
     }
     actions {
       base_blob { delete_after_days_since_modification_greater_than = 1 }
+    }
+  }
+  rule {
+    name    = "delete-orphaned-transcript-content"
+    enabled = true
+    filters {
+      prefix_match = ["transcripts/"]
+      blob_types   = ["blockBlob"]
+    }
+    actions {
+      base_blob { delete_after_days_since_modification_greater_than = ceil(var.transcript_ttl_hours / 24) }
     }
   }
 }
@@ -223,6 +240,8 @@ locals {
     { name = "AZURE_CLIENT_ID", value = azurerm_user_assigned_identity.workload.client_id },
     { name = "VOICEPROMPT_ENVIRONMENT", value = "production" },
     { name = "VOICEPROMPT_STORAGE_ACCOUNT_NAME", value = azurerm_storage_account.main.name },
+    { name = "VOICEPROMPT_TRANSCRIPTS_CONTAINER", value = azurerm_storage_container.transcripts.name },
+    { name = "VOICEPROMPT_TRANSCRIPT_TTL_HOURS", value = tostring(var.transcript_ttl_hours) },
     { name = "VOICEPROMPT_ENTRA_TENANT_ID", value = var.entra_tenant_id },
     { name = "VOICEPROMPT_ENTRA_AUDIENCE", value = var.entra_audience },
     { name = "VOICEPROMPT_ENTRA_REQUIRED_SCOPE", value = var.entra_required_scope },

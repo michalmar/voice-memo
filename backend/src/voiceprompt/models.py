@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
@@ -78,3 +78,12 @@ class SessionRecord(BaseModel):
 
 class TranscriptRecord(Transcript):
     owner: str
+
+
+class TranscriptionCheckpoint(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    session_id: UUID
+    owner: str
+    markdown: str
+    created_at: datetime
+    expires_at: datetime

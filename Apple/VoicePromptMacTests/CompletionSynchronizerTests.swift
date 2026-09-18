@@ -89,11 +89,14 @@ private actor TestQuickRecorder: QuickRecording {
     private var callbacks: [@MainActor @Sendable (QuickRecordingEngine.MeterReading) -> Void] = []
     private let failsToStart: Bool
     private let failsToStop: Bool
+    private let cancellationError: (any Error)?
     private(set) var cancelCount = 0
+    private(set) var recordings: [QuickRecordingEngine.Result] = []
 
-    init(failsToStart: Bool = false, failsToStop: Bool = true) {
+    init(failsToStart: Bool = false, failsToStop: Bool = true, cancellationError: (any Error)? = nil) {
         self.failsToStart = failsToStart
         self.failsToStop = failsToStop
+        self.cancellationError = cancellationError
     }
 
     func start(
@@ -109,12 +112,29 @@ private actor TestQuickRecorder: QuickRecording {
 
     func stop() throws -> QuickRecordingEngine.Result {
         if failsToStop { throw QuickRecordingEngine.RecordingError.notRecording }
-        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID()).m4a")
+        let directory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "build/QuickRecordingTests", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: "\(UUID()).m4a")
         try Data("test-audio".utf8).write(to: url)
-        return .init(sessionID: UUID(), fileURL: url, durationMilliseconds: 65_000)
+        let recording = QuickRecordingEngine.Result(
+            sessionID: UUID(), fileURL: url, durationMilliseconds: 65_000
+        )
+        recordings.append(recording)
+        return recording
     }
 
-    func cancel() { cancelCount += 1 }
+    func cancel() throws {
+        cancelCount += 1
+        if let cancellationError { throw cancellationError }
+    }
+}
+
+private final class FailingRecordingCleanup: FileManager, @unchecked Sendable {
+    override func removeItem(at URL: URL) throws {
+        throw CocoaError(.fileWriteNoPermission)
+    }
 }
 
 @Suite(.serialized)
@@ -159,13 +179,15 @@ struct CompletionSynchronizerTests {
                        notifications: notifications, defaults: defaults, suite: suite)
     }
 
-    private func transcript(id: UUID = UUID(), markdown: String = "A cloud transcript") -> String {
+    private func transcript(
+        id: UUID = UUID(), markdown: String = "A cloud transcript", refined: Bool? = nil
+    ) -> String {
         let formatter = ISO8601DateFormatter()
         return """
         {"id":"\(id)","session_id":"\(UUID())",
         "created_at":"\(formatter.string(from: Date()))",
         "expires_at":"\(formatter.string(from: Date().addingTimeInterval(48 * 60 * 60)))",
-        "markdown":"\(markdown)"}
+        "markdown":"\(markdown)"\(refined.map { ",\"refined\":\($0)" } ?? "")}
         """
     }
 
@@ -545,14 +567,199 @@ struct CompletionSynchronizerTests {
         #expect(!QuickTranscriptionDefaults.shouldRefine(in: defaults))
     }
 
-    private func transcriptionController(_ h: Harness, recorder: TestQuickRecorder) -> TranscriptionController {
+    private func transcriptionController(
+        _ h: Harness, recorder: TestQuickRecorder, fileManager: FileManager = .default
+    ) -> TranscriptionController {
         TranscriptionController(
             client: APIClient(
                 baseURL: URL(string: "https://voiceprompt.test/")!,
                 credentials: h.credentials, session: HTTPStub.session()
             ),
-            synchronizer: h.sync, defaults: h.defaults, recorder: recorder
+            synchronizer: h.sync, defaults: h.defaults, recorder: recorder, fileManager: fileManager
         )
+    }
+
+    private func waitForTranscription(_ controller: TranscriptionController) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while controller.activeTranscriptions > 0, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.activeTranscriptions == 0)
+        #expect(controller.refiningTranscriptions == 0)
+        #expect(controller.refinementRequestedTranscriptions == 0)
+    }
+
+    @Test func quickRecordingsUseDurableApplicationSupport() {
+        let expected = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "VoicePrompt/QuickRecordings", directoryHint: .isDirectory)
+        #expect(TranscriptionController.recordingDirectory == expected)
+    }
+
+    @Test(arguments: [500, 0])
+    func failedTranscriptionKeepsAudioAfterDismissalAnotherRecordingAndRestart(status: Int) async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let response = (status, "{\"detail\":\"PropertyValueTooLarge\"}")
+        HTTPStub.shared.configure([response, response])
+        let recorder = TestQuickRecorder(failsToStop: false)
+        var controller: TranscriptionController? = transcriptionController(h, recorder: recorder)
+        await controller?.startListening()
+        await controller?.stopListening()
+        let recording = try #require(await recorder.recordings.first)
+        defer { try? FileManager.default.removeItem(at: recording.fileURL) }
+        try await waitForTranscription(try #require(controller))
+
+        #expect(try Data(contentsOf: recording.fileURL) == Data("test-audio".utf8))
+        #expect(controller?.lastError?.contains("Audio saved at: \(recording.fileURL.path)") == true)
+        if status == 500 {
+            #expect(controller?.lastError?.contains("PropertyValueTooLarge") == true)
+        }
+        #expect(h.sync.history.isEmpty)
+        #expect(h.clipboard.values.isEmpty)
+        #expect(h.textPaster.pasteCount == 0)
+        #expect(h.notifications.count == 0)
+
+        controller?.dismissError()
+        #expect(controller?.lastError == nil)
+        #expect(FileManager.default.fileExists(atPath: recording.fileURL.path))
+        h.defaults.set(false, forKey: QuickTranscriptionDefaults.refine)
+        HTTPStub.shared.configure([(201, transcript(markdown: "The next recording"))])
+        await controller?.startListening()
+        #expect(controller?.captureState == .listening)
+        await controller?.stopListening()
+        try await waitForTranscription(try #require(controller))
+        let nextRecording = try #require(await recorder.recordings.last)
+        #expect(nextRecording.fileURL != recording.fileURL)
+        #expect(!FileManager.default.fileExists(atPath: nextRecording.fileURL.path))
+        #expect(h.clipboard.values == ["The next recording"])
+        #expect(controller?.lastError == nil)
+
+        controller = nil
+        let restarted = transcriptionController(h, recorder: TestQuickRecorder())
+        await restarted.startListening()
+        await restarted.cancelListening()
+        #expect(try Data(contentsOf: recording.fileURL) == Data("test-audio".utf8))
+    }
+
+    @Test(arguments: [false, true])
+    func successfulTranscriptionDeletesOnlyItsOwnAudio(refine: Bool) async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(refine, forKey: QuickTranscriptionDefaults.refine)
+        let response = (201, transcript(markdown: "Completed recording", refined: refine ? true : nil))
+        HTTPStub.shared.configure([response, response])
+        let recorder = TestQuickRecorder(failsToStop: false)
+        let controller = transcriptionController(h, recorder: recorder)
+        await controller.startListening()
+        await controller.stopListening()
+        let recording = try #require(await recorder.recordings.first)
+        defer { try? FileManager.default.removeItem(at: recording.fileURL) }
+        try await waitForTranscription(controller)
+
+        #expect(!FileManager.default.fileExists(atPath: recording.fileURL.path))
+        #expect(controller.lastError == nil)
+        #expect(controller.captureState == .idle)
+        #expect(h.clipboard.values == ["Completed recording"])
+        #expect(h.textPaster.pasteCount == 1)
+        #expect(h.notifications.count == 1)
+    }
+
+    @Test(arguments: [Bool?.none, Bool?.some(false)])
+    func missingRefinementConfirmationRetainsAudioWithoutDeliveringSuccess(refined: Bool?) async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let response = (201, transcript(refined: refined))
+        HTTPStub.shared.configure([response, response])
+        let recorder = TestQuickRecorder(failsToStop: false)
+        let controller = transcriptionController(h, recorder: recorder)
+        await controller.startListening()
+        await controller.stopListening()
+        let recording = try #require(await recorder.recordings.first)
+        defer { try? FileManager.default.removeItem(at: recording.fileURL) }
+        try await waitForTranscription(controller)
+
+        #expect(try Data(contentsOf: recording.fileURL) == Data("test-audio".utf8))
+        #expect(controller.lastError?.contains("did not confirm the requested refinement") == true)
+        #expect(controller.lastError?.contains("Audio saved at: \(recording.fileURL.path)") == true)
+        #expect(h.sync.history.isEmpty)
+        #expect(h.clipboard.values.isEmpty)
+        #expect(h.textPaster.pasteCount == 0)
+        #expect(h.notifications.count == 0)
+    }
+
+    @Test func cleanupFailureSurfacesTheSavedAudioPathAfterSuccessfulDelivery() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let response = (201, transcript(refined: true))
+        HTTPStub.shared.configure([response, response])
+        let recorder = TestQuickRecorder(failsToStop: false)
+        let controller = transcriptionController(h, recorder: recorder, fileManager: FailingRecordingCleanup())
+        await controller.startListening()
+        await controller.stopListening()
+        let recording = try #require(await recorder.recordings.first)
+        defer { try? FileManager.default.removeItem(at: recording.fileURL) }
+        try await waitForTranscription(controller)
+
+        #expect(FileManager.default.fileExists(atPath: recording.fileURL.path))
+        #expect(controller.lastError?.contains("could not be deleted") == true)
+        #expect(controller.lastError?.contains("Audio saved at: \(recording.fileURL.path)") == true)
+        #expect(h.clipboard.values == ["A cloud transcript"])
+        #expect(h.notifications.count == 1)
+        controller.dismissError()
+        await controller.startListening()
+        await controller.cancelListening()
+        #expect(FileManager.default.fileExists(atPath: recording.fileURL.path))
+    }
+
+    @Test func earlierTranscriptionFailureDoesNotInterruptANewCapture() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(false, forKey: QuickTranscriptionDefaults.refine)
+        HTTPStub.shared.configure([(500, "{\"detail\":\"PropertyValueTooLarge\"}")])
+        let recorder = TestQuickRecorder(failsToStop: false)
+        let controller = transcriptionController(h, recorder: recorder)
+        await h.credentials.pauseAccess()
+        await controller.startListening()
+        await controller.stopListening()
+        let recording = try #require(await recorder.recordings.first)
+        defer { try? FileManager.default.removeItem(at: recording.fileURL) }
+        await h.credentials.waitForPausedAccess()
+        await controller.startListening()
+        await recorder.emit(duration: 12, session: 1)
+        #expect(controller.activeTranscriptions == 1)
+        #expect(controller.captureState == .listening)
+        await h.credentials.resumeAccess()
+        try await waitForTranscription(controller)
+
+        #expect(controller.captureState == .listening)
+        #expect(controller.recordingTime == "00:12")
+        #expect(controller.lastError?.contains(recording.fileURL.path) == true)
+        await controller.cancelListening()
+        #expect(controller.captureState == .idle)
+        #expect(controller.recordingTime == "00:00")
+        #expect(FileManager.default.fileExists(atPath: recording.fileURL.path))
+    }
+
+    @Test func cancellationCleanupFailureIsVisibleAndDoesNotBlockAnotherCapture() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        let fileURL = TranscriptionController.recordingDirectory.appending(path: "\(UUID()).m4a")
+        let recorder = TestQuickRecorder(cancellationError: QuickRecordingEngine.RecordingError.cleanupFailed(
+            fileURL: fileURL, underlying: CocoaError(.fileWriteNoPermission)
+        ))
+        let controller = transcriptionController(h, recorder: recorder)
+        await controller.startListening()
+        await recorder.emit(duration: 12)
+        await controller.cancelListening()
+
+        #expect(controller.captureState == .idle)
+        #expect(controller.recordingTime == "00:00")
+        #expect(controller.lastError?.contains("could not be deleted") == true)
+        #expect(controller.lastError?.contains("Audio saved at: \(fileURL.path)") == true)
+        await controller.startListening()
+        #expect(controller.captureState == .listening)
+        await controller.cancelListening()
     }
 
     @Test func recordingTimerUsesAudioDurationAndDoesNotResetWhenResizing() async {
@@ -683,6 +890,64 @@ struct CompletionSynchronizerTests {
             }
         }
         await controller.cancelListening()
+    }
+
+    @Test func recoveryErrorHUDKeepsCaptureControlsAndRestoresItsOriginalSizeAfterDismissal() async throws {
+        let h = harness()
+        defer { h.defaults.removePersistentDomain(forName: h.suite) }
+        h.defaults.set(false, forKey: "quickTranscriptionShortcutEnabled")
+        let recorder = TestQuickRecorder()
+        let controller = transcriptionController(h, recorder: recorder)
+        let shortcut = GlobalShortcutManager(defaults: h.defaults) {}
+        let presentation = TranscriptionOverlayPresentation()
+        let path = TranscriptionController.recordingDirectory.appending(path: "\(UUID()).m4a")
+        let error = QuickRecordingEngine.RecordingError.cleanupFailed(
+            fileURL: path, underlying: CocoaError(.fileWriteNoPermission)
+        )
+        for recording in [false, true] {
+            if recording {
+                await controller.startListening()
+                await recorder.emit(duration: 65)
+                presentation.update(captureState: controller.captureState, hasError: false)
+                #expect(presentation.isMinimized)
+            }
+            controller.show(error)
+            presentation.update(captureState: controller.captureState, hasError: true)
+            #expect(!presentation.isMinimized)
+            for colorScheme in [ColorScheme.light, .dark] {
+                let view = TranscriptionOverlay(
+                    controller: controller, shortcut: shortcut, presentation: presentation
+                )
+                .environment(\.colorScheme, colorScheme)
+                let hostingView = NSHostingView(rootView: view)
+                hostingView.appearance = NSAppearance(named: colorScheme == .light ? .aqua : .darkAqua)
+                let window = NSWindow(
+                    contentRect: NSRect(origin: .zero, size: TranscriptionOverlayLayout.errorSize),
+                    styleMask: [.borderless], backing: .buffered, defer: false
+                )
+                window.contentView = hostingView
+                hostingView.layoutSubtreeIfNeeded()
+                #expect(hostingView.fittingSize == TranscriptionOverlayLayout.errorSize)
+                let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+                hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+                let data = try #require(bitmap.representation(using: .png, properties: [:]))
+                Attachment.record(data, named: "hud-error-\(recording ? "listening" : "idle")-\(colorScheme).png")
+
+                controller.dismissError()
+                presentation.update(captureState: controller.captureState, hasError: false)
+                window.setContentSize(TranscriptionOverlayLayout.expandedSize)
+                hostingView.layoutSubtreeIfNeeded()
+                #expect(hostingView.fittingSize == TranscriptionOverlayLayout.expandedSize)
+                controller.show(error)
+                presentation.update(captureState: controller.captureState, hasError: true)
+            }
+            if recording {
+                #expect(controller.captureState == .listening)
+                #expect(controller.recordingTime == "01:05")
+                await controller.cancelListening()
+            }
+            controller.dismissError()
+        }
     }
 
     @Test func failedTranscriptDownloadPreservesHistoryAndSurfacesFailure() async {

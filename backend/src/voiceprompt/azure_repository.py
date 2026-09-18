@@ -4,14 +4,15 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID
 
-from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.data.tables.aio import TableServiceClient
+from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.queue.aio import QueueServiceClient
 
 from .config import Settings
-from .models import SessionRecord, TranscriptRecord
+from .models import SessionRecord, TranscriptionCheckpoint, TranscriptRecord, TranscriptSummary
 
 
 def _partition(owner: str) -> str:
@@ -36,6 +37,9 @@ class AzureRepository:
         self.blobs = BlobServiceClient(
             f"https://{name}.blob.{suffix}", credential=credential
         ).get_container_client(settings.chunks_container)
+        self.transcript_blobs = BlobServiceClient(
+            f"https://{name}.blob.{suffix}", credential=credential
+        ).get_container_client(settings.transcripts_container)
         self.queue = QueueServiceClient(
             f"https://{name}.queue.{suffix}", credential=credential
         ).get_queue_client(settings.work_queue)
@@ -160,24 +164,77 @@ class AzureRepository:
         encoded = base64.b64encode(json.dumps(message, separators=(",", ":")).encode()).decode()
         await self.queue.send_message(encoded)
 
-    async def save_transcript(self, transcript: TranscriptRecord) -> None:
-        await self.transcripts.upsert_entity(
+    @staticmethod
+    def _transcript_blob_name(partition: str, transcript_id: str) -> str:
+        return f"completed/{partition}/{transcript_id}.md"
+
+    @staticmethod
+    def _checkpoint_blob_name(checkpoint: TranscriptionCheckpoint) -> str:
+        return f"checkpoints/{_partition(checkpoint.owner)}/{checkpoint.session_id}/{checkpoint.id}.json"
+
+    async def save_transcription_checkpoint(self, checkpoint: TranscriptionCheckpoint) -> None:
+        blob_name = self._checkpoint_blob_name(checkpoint)
+        await self.transcript_blobs.upload_blob(
+            blob_name,
+            checkpoint.model_dump_json().encode("utf-8"),
+            overwrite=True,
+            content_settings=ContentSettings(content_type="application/json; charset=utf-8"),
+        )
+        await self.transcript_expiry.upsert_entity(
             {
-                "PartitionKey": _partition(transcript.owner),
-                "RowKey": str(transcript.id),
-                "owner": transcript.owner,
-                "payload": transcript.model_dump_json(),
-                "expires_at": transcript.expires_at,
-                "created_at": transcript.created_at,
+                "PartitionKey": "expiry",
+                "RowKey": (
+                    f"{checkpoint.expires_at.isoformat()}:checkpoint:"
+                    f"{_partition(checkpoint.owner)}:{checkpoint.id}"
+                ),
+                "kind": "checkpoint",
+                "blob_name": blob_name,
             },
             mode="replace",
+        )
+
+    async def _delete_content_blob(self, blob_name: str) -> None:
+        try:
+            await self.transcript_blobs.delete_blob(blob_name)
+        except ResourceNotFoundError:
+            pass
+
+    async def delete_transcription_checkpoint(self, checkpoint: TranscriptionCheckpoint) -> None:
+        await self._delete_content_blob(self._checkpoint_blob_name(checkpoint))
+
+    async def save_transcript(self, transcript: TranscriptRecord) -> None:
+        partition = _partition(transcript.owner)
+        blob_name = self._transcript_blob_name(partition, str(transcript.id))
+        # Write content first so a metadata outage cannot discard the model output.
+        await self.transcript_blobs.upload_blob(
+            blob_name,
+            transcript.markdown.encode("utf-8"),
+            overwrite=True,
+            content_settings=ContentSettings(content_type="text/markdown; charset=utf-8"),
+            metadata={
+                "session_id": str(transcript.session_id),
+                "transcript_id": str(transcript.id),
+                "expires_at": transcript.expires_at.isoformat(),
+            },
         )
         await self.transcript_expiry.upsert_entity(
             {
                 "PartitionKey": "expiry",
                 "RowKey": f"{transcript.expires_at.isoformat()}:{transcript.id}",
-                "owner_partition": _partition(transcript.owner),
+                "owner_partition": partition,
                 "transcript_id": str(transcript.id),
+            },
+            mode="replace",
+        )
+        await self.transcripts.upsert_entity(
+            {
+                "PartitionKey": partition,
+                "RowKey": str(transcript.id),
+                "owner": transcript.owner,
+                "payload": transcript.model_dump_json(exclude={"markdown"}),
+                "blob_name": blob_name,
+                "expires_at": transcript.expires_at,
+                "created_at": transcript.created_at,
             },
             mode="replace",
         )
@@ -185,24 +242,34 @@ class AzureRepository:
     async def get_transcript(self, owner: str, transcript_id: UUID) -> TranscriptRecord | None:
         try:
             item = await self.transcripts.get_entity(_partition(owner), str(transcript_id))
-            if item["owner"] != owner:
-                return None
-            return TranscriptRecord.model_validate_json(item["payload"])
         except ResourceNotFoundError:
             return None
+        if item["owner"] != owner:
+            return None
+        if "blob_name" not in item:
+            return TranscriptRecord.model_validate_json(item["payload"])
+        body = await (await self.transcript_blobs.download_blob(item["blob_name"])).readall()
+        return TranscriptRecord.model_validate({
+            **json.loads(item["payload"]),
+            "markdown": body.decode("utf-8"),
+        })
 
-    async def list_transcripts(self, owner: str, since: datetime) -> list[TranscriptRecord]:
+    async def list_transcripts(self, owner: str, since: datetime) -> list[TranscriptSummary]:
         query = "PartitionKey eq @partition and created_at ge @since"
         parameters = {"partition": _partition(owner), "since": since}
         records = [
-            TranscriptRecord.model_validate_json(entity["payload"])
+            TranscriptSummary.model_validate_json(entity["payload"])
             async for entity in self.transcripts.query_entities(query, parameters=parameters)
         ]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     async def delete_transcript(self, owner: str, transcript_id: UUID) -> bool:
+        return await self._delete_transcript(_partition(owner), str(transcript_id))
+
+    async def _delete_transcript(self, partition: str, transcript_id: str) -> bool:
+        await self._delete_content_blob(self._transcript_blob_name(partition, transcript_id))
         try:
-            await self.transcripts.delete_entity(_partition(owner), str(transcript_id))
+            await self.transcripts.delete_entity(partition, transcript_id)
             return True
         except ResourceNotFoundError:
             return False
@@ -213,14 +280,13 @@ class AzureRepository:
             "PartitionKey eq @partition and RowKey le @cutoff",
             parameters={"partition": "expiry", "cutoff": f"{now.isoformat()}:\uffff"},
         ):
+            if entity.get("kind") == "checkpoint":
+                await self._delete_content_blob(entity["blob_name"])
+            else:
+                count += await self._delete_transcript(entity["owner_partition"], entity["transcript_id"])
+            # Keep the expiry record on storage errors so the next run can retry.
             try:
-                await self.transcripts.delete_entity(entity["owner_partition"], entity["transcript_id"])
-                count += 1
+                await self.transcript_expiry.delete_entity(entity["PartitionKey"], entity["RowKey"])
             except ResourceNotFoundError:
                 pass
-            finally:
-                try:
-                    await self.transcript_expiry.delete_entity(entity["PartitionKey"], entity["RowKey"])
-                except (ResourceNotFoundError, HttpResponseError):
-                    pass
         return count

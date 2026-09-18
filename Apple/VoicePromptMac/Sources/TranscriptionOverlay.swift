@@ -27,6 +27,12 @@ final class TranscriptionOverlayPresentation: ObservableObject {
 enum TranscriptionOverlayLayout {
     static let expandedSize = NSSize(width: 366, height: 92)
     static let minimizedSize = NSSize(width: 152, height: 60)
+    static let errorSize = NSSize(width: 366, height: 220)
+
+    static func size(isMinimized: Bool, hasError: Bool) -> NSSize {
+        if hasError { return errorSize }
+        return isMinimized ? minimizedSize : expandedSize
+    }
 
     static func frame(resizing frame: NSRect, to size: NSSize, within screen: NSRect) -> NSRect {
         NSRect(
@@ -92,7 +98,7 @@ final class TranscriptionOverlayController {
 
     private func resize(minimized: Bool) {
         guard let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-        let size = minimized ? TranscriptionOverlayLayout.minimizedSize : TranscriptionOverlayLayout.expandedSize
+        let size = TranscriptionOverlayLayout.size(isMinimized: minimized, hasError: controller.lastError != nil)
         let frame = TranscriptionOverlayLayout.frame(
             resizing: panel.frame, to: size, within: screen.visibleFrame
         )
@@ -125,20 +131,36 @@ struct TranscriptionOverlay: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @AppStorage(QuickTranscriptionDefaults.refine) private var refine = true
 
+    private var isMinimized: Bool {
+        presentation.isMinimized && controller.lastError == nil
+    }
+
+    private var size: NSSize {
+        TranscriptionOverlayLayout.size(isMinimized: isMinimized, hasError: controller.lastError != nil)
+    }
+
     var body: some View {
         Group {
-            if presentation.isMinimized {
+            if isMinimized {
                 minimizedContent
             } else {
-                expandedContent
+                VStack(spacing: 0) {
+                    expandedContent
+                        .frame(height: 72)
+                    if let error = controller.lastError {
+                        TranscriptionErrorDetails(message: error)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    }
+                }
             }
         }
         .frame(
-            width: presentation.isMinimized ? 132 : 346,
-            height: presentation.isMinimized ? 40 : 72
+            width: size.width - 20,
+            height: size.height - 20
         )
         .background {
-            RoundedRectangle(cornerRadius: presentation.isMinimized ? 20 : 18, style: .continuous)
+            RoundedRectangle(cornerRadius: isMinimized ? 20 : 18, style: .continuous)
                 .fill(
                     reduceTransparency
                         ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
@@ -146,7 +168,7 @@ struct TranscriptionOverlay: View {
                 )
         }
         .overlay {
-            RoundedRectangle(cornerRadius: presentation.isMinimized ? 20 : 18, style: .continuous)
+            RoundedRectangle(cornerRadius: isMinimized ? 20 : 18, style: .continuous)
                 .strokeBorder(contrast == .increased ? Color.primary : .white.opacity(0.16))
                 .allowsHitTesting(false)
         }
@@ -184,6 +206,11 @@ struct TranscriptionOverlay: View {
                 RefinementProgressIndicator(
                     isRefining: controller.displayedProcessingPhase == .refining
                 )
+            } else if controller.lastError != nil && controller.activeTranscriptions == 0 {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .frame(width: 54)
+                    .accessibilityHidden(true)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -258,6 +285,7 @@ struct TranscriptionOverlay: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
                 .accessibilityLabel("Dismiss error")
             }
         }
@@ -296,9 +324,9 @@ struct TranscriptionOverlay: View {
     }
 
     private var title: String {
-        if let error = controller.lastError { return error }
         if controller.captureState == .starting { return "Opening microphone" }
         if controller.captureState == .listening { return "Listening" }
+        if controller.lastError != nil && controller.activeTranscriptions == 0 { return "Recording issue" }
         if controller.displayedProcessingPhase == .refining {
             return "Refining with Luna"
         }
@@ -308,7 +336,6 @@ struct TranscriptionOverlay: View {
     }
 
     private var detail: String {
-        if controller.lastError != nil { return retryMessage }
         if controller.captureState == .listening {
             if controller.refiningTranscriptions > 0 {
                 return controller.activeTranscriptions == 1
@@ -319,6 +346,7 @@ struct TranscriptionOverlay: View {
                 ? "\(controller.activeTranscriptions) earlier recording processing"
                 : "Stop to transcribe"
         }
+        if controller.lastError != nil && controller.activeTranscriptions == 0 { return retryMessage }
         if controller.refiningTranscriptions > 0 && controller.activeTranscriptions > 1 {
             let transcribing = controller.activeTranscriptions - controller.refiningTranscriptions
             return transcribing > 0
@@ -328,6 +356,26 @@ struct TranscriptionOverlay: View {
         return shortcut.isEnabled
             ? "Press \(shortcut.shortcut.displayName) to record another"
             : "Use the menu to record another"
+    }
+
+    struct TranscriptionErrorDetails: View {
+        let message: String
+
+        var body: some View {
+            ScrollView(.vertical) {
+                Text(message)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("transcription-error-message")
+            }
+            .scrollIndicators(.visible)
+            .help(message)
+            .id(message)
+            .accessibilityIdentifier("transcription-error-details")
+        }
     }
 
     private var retryMessage: String {

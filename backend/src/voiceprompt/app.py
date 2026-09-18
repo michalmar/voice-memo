@@ -17,7 +17,6 @@ from .models import (
     SessionView,
     Transcript,
     TranscriptList,
-    TranscriptSummary,
 )
 from .repository import MemoryRepository, Repository
 from .processing import FoundryClient, RefinementClient, SpeechClient
@@ -164,7 +163,7 @@ def create_app(
     async def list_transcripts(principal: Principal = Depends(current_principal)):
         since = datetime.now(UTC) - timedelta(hours=app.state.settings.transcript_ttl_hours)
         records = await app.state.repository.list_transcripts(principal.subject, since)
-        return TranscriptList(items=[TranscriptSummary(**item.model_dump()) for item in records])
+        return TranscriptList(items=records)
 
     @app.get("/v1/transcripts/{transcript_id}", response_model=Transcript)
     async def get_transcript(transcript_id: UUID, principal: Principal = Depends(current_principal)):

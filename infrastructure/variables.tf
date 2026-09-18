@@ -26,6 +26,17 @@ variable "worker_container_image" {
   description = "Optional immutable worker-only image override; null uses container_image."
 }
 
+variable "transcript_ttl_hours" {
+  type        = number
+  default     = 48
+  description = "Transcript and raw recovery checkpoint retention in hours; also sizes the orphan-blob lifecycle safety net."
+
+  validation {
+    condition     = var.transcript_ttl_hours >= 1 && floor(var.transcript_ttl_hours) == var.transcript_ttl_hours
+    error_message = "transcript_ttl_hours must be a positive whole number."
+  }
+}
+
 variable "entra_tenant_id" {
   type        = string
   description = "Microsoft Entra tenant ID."

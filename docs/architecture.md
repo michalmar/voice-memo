@@ -51,6 +51,7 @@ sequenceDiagram
     participant Convert as FFmpeg conversion
     participant Speech as Foundry Speech<br/>MAI-Transcribe-2
     participant Luna as Foundry Chat<br/>Luna
+    participant Blob as Private transcript blobs
     participant Table as Azure Table Storage
     participant Clipboard as macOS clipboard
     participant Target as Previously active app
@@ -81,11 +82,15 @@ sequenceDiagram
         API->>Speech: Transcribe with managed identity<br/>verbatim mode
         Speech-->>API: Raw transcript
         opt Refine with Luna is enabled
+            API->>Blob: Save raw recovery checkpoint with expiry
             API->>Table: Mark session refining
             API->>Luna: Polish raw transcript
             Luna-->>API: Copy-ready Markdown
         end
-        API->>Table: Save transcript and mark session completed
+        API->>Blob: Save complete Markdown
+        API->>Table: Save expiry index, metadata and blob reference
+        API->>Blob: Delete raw checkpoint after durable save
+        API->>Table: Mark session completed
         API-->>HUD: 201 Created + saved transcript
         HUD->>Clipboard: Replace clipboard text
         opt Direct paste is enabled
@@ -96,6 +101,11 @@ sequenceDiagram
         HUD->>Recorder: Delete local M4A
     end
 ```
+
+Failures retain the Mac M4A in Application Support and show its recovery path.
+Refinement failures retain the raw checkpoint; persistence failures mark the
+session `failed` with a stage-specific code rather than leaving it `refining`.
+The synchronous response and clipboard delivery occur only after storage succeeds.
 
 Every stopped recording owns an independent asynchronous request. The controller
 tracks the number of requests in flight, while permitting one new active recording.
@@ -175,14 +185,17 @@ sequenceDiagram
         Worker->>Worker: Remove deterministic boundary overlap
         Worker->>Cleanup: Refine assembled transcript
         Cleanup-->>Worker: Copy-ready Markdown
-        Worker->>Table: Store transcript with 48-hour expiry
+        Worker->>Blob: Store complete Markdown
+        Worker->>Table: Store metadata, blob reference and 48-hour expiry
         Worker->>Segments: Delete intermediate raw segment text
         Worker->>Table: Mark session completed
         Worker->>PubSub: Send transcript ID to authenticated user
         PubSub-->>Mac: transcript.completed event
         Mac->>API: GET /v1/transcripts/{id}
-        API->>Table: Read owned transcript
-        Table-->>API: Markdown transcript
+        API->>Table: Read owned transcript metadata
+        Table-->>API: Private blob reference
+        API->>Blob: Read Markdown
+        Blob-->>API: Markdown transcript
         API-->>Mac: Transcript
         Mac->>Clipboard: Copy exactly once
         Mac->>Notification: Post completion notification
@@ -209,6 +222,46 @@ removes deterministic boundary overlap. The full raw text is refined once and
 deleted immediately after the cleaned transcript is durable. Transcript expiry is
 enforced by hourly cleanup at 48 hours; a one-day Blob lifecycle rule is a safety
 net for abandoned audio.
+
+## Transcript storage and recovery
+
+Table Storage contains session state, transcript metadata and expiry indexes,
+not new full transcript bodies. Azure limits each string property to 64 KiB
+in UTF-16, so storing the complete Markdown in a table payload fails for long
+recordings. New transcript metadata retains the existing JSON `payload` without
+`markdown` and adds a `blob_name` reference.
+
+The private `transcripts` blob container holds UTF-8 Markdown at
+`completed/<owner-hash>/<transcript-id>.md`. Its blobs also carry session ID,
+transcript ID and expiry metadata for recovery if the table write fails.
+History listing reads only table metadata; fetching one transcript validates
+ownership through its table partition before downloading the body. Legacy rows
+with embedded Markdown remain readable, listable, deletable and expirable;
+there is no destructive migration and no client API contract change.
+
+For Mac refinement, the raw transcript is first saved as a JSON checkpoint at
+`checkpoints/<owner-hash>/<session-id>/<checkpoint-id>.json` in the same private
+container. Each attempt has its own checkpoint so expiry of an earlier failed
+attempt cannot delete newer recovery text. Checkpoints do not appear as completed
+history or trigger clipboard delivery. Successful saves remove their checkpoint;
+failed attempts retain it for the configured transcript lifetime (48 hours by
+default). iOS already retains its individual raw segments until final storage
+succeeds.
+
+Content is written before its expiry index, then the completed-history metadata
+is published last. This keeps model output recoverable during table outages and
+avoids publishing a history entry without its content. These writes are not a
+cross-service transaction: an interrupted write can leave an orphan blob. An
+independent transcript-container lifecycle rule removes such orphans after at
+least the configured retention duration, rounded up to whole days. It is separate
+from the audio container's one-day policy.
+
+Explicit deletion removes both the body and the metadata. Hourly expiry cleanup
+does the same for transcripts and removes expired checkpoints. Storage errors
+leave expiry entries in place and fail the cleanup run so deletion can be retried.
+Azure Blob soft-delete protection can retain deleted content for its configured
+additional recovery window (one day in this infrastructure); lifecycle execution
+is asynchronous, not an exact deletion deadline.
 
 ## Identity and network
 

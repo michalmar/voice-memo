@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Testing
 @testable import VoicePromptMac
 
@@ -47,6 +48,31 @@ struct TranscriptionOverlayTests {
         ) == original)
     }
 
+    @Test func errorsUseABoundedExpandedSizeEvenWhenPreviouslyMinimized() {
+        for minimized in [true, false] {
+            #expect(TranscriptionOverlayLayout.size(isMinimized: minimized, hasError: true)
+                == TranscriptionOverlayLayout.errorSize)
+        }
+        #expect(TranscriptionOverlayLayout.size(isMinimized: true, hasError: false)
+            == TranscriptionOverlayLayout.minimizedSize)
+        #expect(TranscriptionOverlayLayout.size(isMinimized: false, hasError: false)
+            == TranscriptionOverlayLayout.expandedSize)
+    }
+
+    @Test func errorExpansionPreservesTopCenterAndRestoresTheOriginalSize() {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let original = NSRect(x: 540, y: 720, width: 366, height: 92)
+        let expanded = TranscriptionOverlayLayout.frame(
+            resizing: original, to: TranscriptionOverlayLayout.errorSize, within: screen
+        )
+        #expect(expanded.midX == original.midX)
+        #expect(expanded.maxY == original.maxY)
+        #expect(expanded.size == NSSize(width: 366, height: 220))
+        #expect(TranscriptionOverlayLayout.frame(
+            resizing: expanded, to: TranscriptionOverlayLayout.expandedSize, within: screen
+        ) == original)
+    }
+
     @Test func expandingAtDisplayEdgesStaysOnScreen() {
         // A display to the left of the primary screen also has negative coordinates.
         let screen = NSRect(x: -1440, y: 24, width: 1440, height: 876)
@@ -56,13 +82,49 @@ struct TranscriptionOverlayTests {
             NSPoint(x: screen.minX, y: screen.maxY - 60),
             NSPoint(x: screen.maxX - 152, y: screen.maxY - 60),
         ] {
-            let frame = TranscriptionOverlayLayout.frame(
-                resizing: NSRect(origin: origin, size: TranscriptionOverlayLayout.minimizedSize),
-                to: TranscriptionOverlayLayout.expandedSize,
-                within: screen
-            )
-            #expect(screen.contains(frame))
+            for size in [TranscriptionOverlayLayout.expandedSize, TranscriptionOverlayLayout.errorSize] {
+                let frame = TranscriptionOverlayLayout.frame(
+                    resizing: NSRect(origin: origin, size: TranscriptionOverlayLayout.minimizedSize),
+                    to: size,
+                    within: screen
+                )
+                #expect(screen.contains(frame))
+            }
         }
+    }
+
+    @Test func longRecoveryErrorsAreScrollableAndExposeTheCompletePath() throws {
+        let path = "/Users/Recording User/Library/Application Support/VoicePrompt/QuickRecordings/\(UUID()).m4a"
+        let message = String(repeating: "The server could not save the transcript. ", count: 40)
+            + "\nAudio saved at: \(path)"
+        let hostingView = NSHostingView(rootView:
+            TranscriptionOverlay.TranscriptionErrorDetails(message: message).frame(width: 314, height: 116)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 314, height: 116),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+        #expect(hostingView.fittingSize == NSSize(width: 314, height: 116))
+
+        func scrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try #require(scrollView(in: hostingView))
+        let document = try #require(scroll.documentView)
+        #expect(document.frame.height > scroll.contentSize.height)
+        document.scrollToVisible(NSRect(
+            x: 0, y: document.bounds.maxY - 1, width: 1, height: 1
+        ))
+        #expect(scroll.contentView.bounds.maxY >= document.bounds.maxY - 1)
+
+        hostingView.layoutSubtreeIfNeeded()
+        let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let data = try #require(bitmap.representation(using: .png, properties: [:]))
+        Attachment.record(data, named: "recovery-error-scrolled-to-complete-path.png")
     }
 
     @Test func waveformUsesMoreThinnerBarsWithBoundedAudioResponsiveHeights() {

@@ -199,8 +199,9 @@ async def test_local_end_to_end_deletes_intermediate_data():
     session = await service.get("owner", session_id)
     assert session.status == SessionStatus.COMPLETED
     transcripts = await repository.list_transcripts("owner", session.created_at)
-    assert transcripts[0].markdown == "# Prompt\n\nVytvor API pomoci FastAPI"
-    assert transcripts[0].refined is True
+    transcript = await repository.get_transcript("owner", transcripts[0].id)
+    assert transcript.markdown == "# Prompt\n\nVytvor API pomoci FastAPI"
+    assert transcript.refined is True
     assert repository.chunks == {}
     assert repository.segment_texts == {}
 

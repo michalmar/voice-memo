@@ -1,12 +1,13 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
 from voiceprompt.config import Settings
-from voiceprompt.models import SessionComplete, SessionCreate, SessionStatus, TranscriptRecord
+from voiceprompt.models import SessionComplete, SessionCreate, SessionStatus, TranscriptionCheckpoint, TranscriptRecord
 from voiceprompt.repository import MemoryRepository
 from voiceprompt.service import SessionService
 
@@ -96,3 +97,105 @@ async def test_retention_cleanup_is_idempotent(context):
     await repository.save_transcript(record)
     assert await repository.cleanup(now) == 1
     assert await repository.cleanup(now) == 0
+
+
+@pytest.mark.asyncio
+async def test_immediate_refinement_checkpoints_raw_text_before_model_and_removes_it_on_success(context):
+    repository, service = context
+    session_id = uuid4()
+    raw = "Long raw transcript. " * 10_000
+
+    async def refine(text, instructions):
+        assert text == raw
+        checkpoint = next(iter(repository.transcription_checkpoints.values()))
+        assert checkpoint.session_id == session_id
+        assert checkpoint.markdown == raw
+        assert checkpoint.expires_at - checkpoint.created_at == timedelta(hours=48)
+        assert await repository.list_transcripts("owner-a", checkpoint.created_at) == []
+        return "# Polished\n" + text
+
+    speech = AsyncMock()
+    speech.transcribe.return_value = raw
+    refinement = AsyncMock()
+    refinement.refine.side_effect = refine
+    transcript = await service.transcribe_immediately(
+        "owner-a", session_id, b"audio", "cs-CZ", "m4a", True, None, speech, refinement,
+    )
+    assert transcript.markdown == "# Polished\n" + raw
+    assert repository.transcription_checkpoints == {}
+    assert (await service.get("owner-a", session_id)).status == SessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage,error_code,raw_saved",
+    [
+        ("speech", "speech_failed", False),
+        ("checkpoint", "checkpoint_persistence_failed", False),
+        ("refinement", "refinement_failed", True),
+        ("transcript", "transcript_persistence_failed", True),
+    ],
+)
+async def test_immediate_failures_are_marked_and_preserve_available_raw_text(
+    context, monkeypatch, stage, error_code, raw_saved, caplog
+):
+    repository, service = context
+    session_id = uuid4()
+    speech, refinement = AsyncMock(), AsyncMock()
+    speech.transcribe.return_value = "Private raw transcript."
+    refinement.refine.return_value = "# Polished transcript"
+    failure = RuntimeError("Synthetic failure")
+    if stage == "speech":
+        speech.transcribe.side_effect = failure
+    elif stage == "refinement":
+        refinement.refine.side_effect = failure
+    else:
+        method = "save_transcription_checkpoint" if stage == "checkpoint" else "save_transcript"
+        monkeypatch.setattr(repository, method, AsyncMock(side_effect=failure))
+
+    with pytest.raises(RuntimeError, match="Synthetic failure"):
+        await service.transcribe_immediately(
+            "owner-a", session_id, b"audio", "cs-CZ", "m4a", True, None, speech, refinement,
+        )
+    session = await service.get("owner-a", session_id)
+    assert session.status == SessionStatus.FAILED
+    assert session.error_code == error_code
+    assert bool(repository.transcription_checkpoints) is raw_saved
+    assert error_code in caplog.text
+    assert "Private raw transcript." not in caplog.text
+    if raw_saved:
+        assert next(iter(repository.transcription_checkpoints.values())).markdown == "Private raw transcript."
+    if stage in {"speech", "checkpoint"}:
+        refinement.refine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unrefined_storage_failure_also_marks_session_failed(context, monkeypatch):
+    repository, service = context
+    speech, refinement = AsyncMock(), AsyncMock()
+    speech.transcribe.return_value = "Raw transcript."
+    monkeypatch.setattr(repository, "save_transcript", AsyncMock(side_effect=RuntimeError("Storage down")))
+    session_id = uuid4()
+    with pytest.raises(RuntimeError, match="Storage down"):
+        await service.transcribe_immediately(
+            "owner-a", session_id, b"audio", "cs-CZ", "m4a", False, None, speech, refinement,
+        )
+    session = await service.get("owner-a", session_id)
+    assert session.status == SessionStatus.FAILED
+    assert session.error_code == "transcript_persistence_failed"
+    refinement.refine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_session_checkpoints_expire_without_a_final_transcript(context):
+    repository, _ = context
+    now = datetime.now(UTC)
+    expired = TranscriptionCheckpoint(
+        session_id=uuid4(), owner="owner-a", markdown="Raw",
+        created_at=now - timedelta(hours=48), expires_at=now,
+    )
+    current = expired.model_copy(update={"id": uuid4(), "expires_at": now + timedelta(hours=1)})
+    await repository.save_transcription_checkpoint(expired)
+    await repository.save_transcription_checkpoint(current)
+    await repository.cleanup(now)
+    assert list(repository.transcription_checkpoints.values()) == [current]

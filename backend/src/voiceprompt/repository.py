@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
-from .models import SessionRecord, TranscriptRecord
+from .models import SessionRecord, TranscriptionCheckpoint, TranscriptRecord, TranscriptSummary
 
 
 class Repository(Protocol):
@@ -19,9 +19,11 @@ class Repository(Protocol):
     async def get_segment_texts(self, owner: str, session_id: UUID, count: int) -> list[str | None]: ...
     async def delete_segment_texts(self, owner: str, session_id: UUID) -> None: ...
     async def enqueue(self, message: dict[str, object]) -> None: ...
+    async def save_transcription_checkpoint(self, checkpoint: TranscriptionCheckpoint) -> None: ...
+    async def delete_transcription_checkpoint(self, checkpoint: TranscriptionCheckpoint) -> None: ...
     async def save_transcript(self, transcript: TranscriptRecord) -> None: ...
     async def get_transcript(self, owner: str, transcript_id: UUID) -> TranscriptRecord | None: ...
-    async def list_transcripts(self, owner: str, since: datetime) -> list[TranscriptRecord]: ...
+    async def list_transcripts(self, owner: str, since: datetime) -> list[TranscriptSummary]: ...
     async def delete_transcript(self, owner: str, transcript_id: UUID) -> bool: ...
     async def cleanup(self, now: datetime) -> int: ...
 
@@ -33,6 +35,7 @@ class MemoryRepository:
         self.segment_texts: dict[tuple[str, UUID, int], str] = {}
         self.accepted_segments: set[tuple[str, UUID, int]] = set()
         self.transcripts: dict[tuple[str, UUID], TranscriptRecord] = {}
+        self.transcription_checkpoints: dict[tuple[str, UUID], TranscriptionCheckpoint] = {}
         self.queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self._lock = asyncio.Lock()
 
@@ -92,15 +95,25 @@ class MemoryRepository:
     async def enqueue(self, message: dict[str, object]) -> None:
         await self.queue.put(message)
 
+    async def save_transcription_checkpoint(self, checkpoint: TranscriptionCheckpoint) -> None:
+        self.transcription_checkpoints[(checkpoint.owner, checkpoint.id)] = checkpoint
+
+    async def delete_transcription_checkpoint(self, checkpoint: TranscriptionCheckpoint) -> None:
+        self.transcription_checkpoints.pop((checkpoint.owner, checkpoint.id), None)
+
     async def save_transcript(self, transcript: TranscriptRecord) -> None:
         self.transcripts[(transcript.owner, transcript.id)] = transcript
 
     async def get_transcript(self, owner: str, transcript_id: UUID) -> TranscriptRecord | None:
         return self.transcripts.get((owner, transcript_id))
 
-    async def list_transcripts(self, owner: str, since: datetime) -> list[TranscriptRecord]:
+    async def list_transcripts(self, owner: str, since: datetime) -> list[TranscriptSummary]:
         return sorted(
-            [item for (subject, _), item in self.transcripts.items() if subject == owner and item.created_at >= since],
+            [
+                TranscriptSummary(**item.model_dump())
+                for (subject, _), item in self.transcripts.items()
+                if subject == owner and item.created_at >= since
+            ],
             key=lambda item: item.created_at,
             reverse=True,
         )
@@ -109,6 +122,11 @@ class MemoryRepository:
         return self.transcripts.pop((owner, transcript_id), None) is not None
 
     async def cleanup(self, now: datetime) -> int:
+        expired_checkpoints = [
+            key for key, value in self.transcription_checkpoints.items() if value.expires_at <= now
+        ]
+        for key in expired_checkpoints:
+            del self.transcription_checkpoints[key]
         expired = [key for key, value in self.transcripts.items() if value.expires_at <= now]
         for key in expired:
             del self.transcripts[key]

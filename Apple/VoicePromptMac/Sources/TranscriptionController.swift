@@ -38,7 +38,13 @@ final class TranscriptionController: ObservableObject {
     private let client: APIClient
     private let synchronizer: CompletionSynchronizer
     private let defaults: UserDefaults
+    private let fileManager: FileManager
     private let logger = Logger(subsystem: "com.michalmar.voiceprompt.macos", category: "QuickTranscription")
+
+    static var recordingDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "VoicePrompt/QuickRecordings", directoryHint: .isDirectory)
+    }
 
     var isVisible: Bool {
         captureState != .idle || activeTranscriptions > 0 || lastError != nil
@@ -65,14 +71,14 @@ final class TranscriptionController: ObservableObject {
         client: APIClient,
         synchronizer: CompletionSynchronizer,
         defaults: UserDefaults = .standard,
-        recorder: (any QuickRecording)? = nil
+        recorder: (any QuickRecording)? = nil,
+        fileManager: FileManager = .default
     ) {
         self.client = client
         self.synchronizer = synchronizer
         self.defaults = defaults
-        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appending(path: "VoicePrompt/QuickRecordings", directoryHint: .isDirectory)
-        self.recorder = recorder ?? QuickRecordingEngine(directory: directory)
+        self.fileManager = fileManager
+        self.recorder = recorder ?? QuickRecordingEngine(directory: Self.recordingDirectory)
     }
 
     func startListening() async {
@@ -136,7 +142,11 @@ final class TranscriptionController: ObservableObject {
     func cancelListening() async {
         guard captureState != .idle else { return }
         captureID = nil
-        await recorder.cancel()
+        do {
+            try await recorder.cancel()
+        } catch {
+            report(error)
+        }
         captureState = .idle
         level = 0.04
         recordingDuration = 0
@@ -165,7 +175,6 @@ final class TranscriptionController: ObservableObject {
             activeTranscriptions -= 1
             processingPhases.removeValue(forKey: recording.sessionID)
             refinementRequests.remove(recording.sessionID)
-            try? FileManager.default.removeItem(at: recording.fileURL)
         }
         do {
             let transcript = try await client.transcribeImmediately(
@@ -175,18 +184,25 @@ final class TranscriptionController: ObservableObject {
                 refine: refine,
                 customRefinementInstructions: refinementInstructions
             )
-            await synchronizer.receiveImmediate(transcript)
             if refine && transcript.refined != true {
-                report(RefinementConfirmationError())
+                throw RefinementConfirmationError()
+            }
+            await synchronizer.receiveImmediate(transcript)
+            do {
+                try fileManager.removeItem(at: recording.fileURL)
+            } catch {
+                report(QuickRecordingEngine.RecordingError.cleanupFailed(
+                    fileURL: recording.fileURL, underlying: error
+                ))
             }
         } catch {
-            report(error)
+            report(error, retainedAudioURL: recording.fileURL)
         }
     }
 
     private struct RefinementConfirmationError: LocalizedError {
         var errorDescription: String? {
-            "The transcription completed, but the backend did not confirm refinement."
+            "The backend did not confirm the requested refinement."
         }
     }
 
@@ -215,8 +231,10 @@ final class TranscriptionController: ObservableObject {
         }
     }
 
-    private func report(_ error: any Error) {
-        lastError = error.localizedDescription
-        logger.error("Quick transcription failed: \(error.localizedDescription, privacy: .private)")
+    private func report(_ error: any Error, retainedAudioURL: URL? = nil) {
+        let message = error.localizedDescription
+            + (retainedAudioURL.map { "\nAudio saved at: \($0.path)" } ?? "")
+        lastError = message
+        logger.error("Quick transcription failed: \(message, privacy: .private)")
     }
 }

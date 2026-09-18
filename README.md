@@ -69,7 +69,7 @@ flowchart LR
     API --> MAI["MAI-Transcribe-2"]
     MAI --> Choice{"Refine enabled?"}
     Choice -->|Yes| Luna["GPT-5.6 Luna"]
-    Choice -->|No| Store["Store transcript<br/>48-hour expiry"]
+    Choice -->|No| Store["Store private transcript blob<br/>+ Table metadata; 48-hour expiry"]
     Luna --> Store
     Store --> Response["Return transcript"]
     Response --> Clipboard["Copy to clipboard"]
@@ -77,11 +77,18 @@ flowchart LR
     Response --> Notice["macOS notification"]
 ```
 
-The direct Mac request does not use Blob Storage. The API temporarily converts
+The direct Mac request does not upload audio to Blob Storage. The API temporarily converts
 the request audio to WAV, sends it to the Foundry Speech endpoint, and optionally
 runs Luna with the built-in prompt plus the user's Mac-specific instructions.
-The resulting text is stored in Table Storage and returned in the same HTTP
-response. That response triggers clipboard delivery and, by default, inserts the
+The resulting text is stored in private Blob Storage, with small metadata and a
+blob reference in Table Storage, and returned in the same HTTP
+response. Raw text is checkpointed before Luna runs so a refinement or final-save
+failure does not discard the transcription. Failed Mac recordings remain in
+`~/Library/Application Support/VoicePrompt/QuickRecordings/`; the error includes
+the saved path. Audio is deleted only after a successful response with any requested
+refinement confirmed, or when the user cancels an active recording.
+
+The successful response triggers clipboard delivery and, by default, inserts the
 text at the cursor in the app that was active when recording started. Direct paste
 can be disabled in Mac settings. Web PubSub is not required for this immediate path.
 
@@ -94,7 +101,8 @@ flowchart LR
     Storage --> Worker["Container Apps worker"]
     Worker --> MAI["MAI-Transcribe-2"]
     MAI --> Refine["Stitch + refine Markdown"]
-    Refine --> Table["Store transcript<br/>48-hour expiry"]
+    Refine --> Content["Private transcript blob"]
+    Content --> Table["Store metadata + blob reference<br/>48-hour expiry"]
     Table --> PubSub["Web PubSub sends<br/>transcript ID"]
     PubSub --> Mac["Mac downloads transcript"]
     Mac --> Clipboard["Copy to clipboard"]

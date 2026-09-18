@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     transcripts_table: str = "transcripts"
     transcript_expiry_table: str = "transcriptexpiry"
     chunks_container: str = "audio"
+    transcripts_container: str = "transcripts"
     work_queue: str = "voice-work"
     poison_queue: str = "voice-work-poison"
     entra_tenant_id: str = ""
@@ -26,7 +27,7 @@ class Settings(BaseSettings):
     max_chunk_bytes: int = 8 * 1024 * 1024
     max_immediate_recording_bytes: int = 64 * 1024 * 1024
     max_segments: int = 120
-    transcript_ttl_hours: int = 48
+    transcript_ttl_hours: int = Field(default=48, ge=1)
     foundry_endpoint: str = ""
     speech_endpoint: str = ""
     speech_model: str = "MAI-Transcribe-2"

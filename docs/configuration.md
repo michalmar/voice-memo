@@ -425,7 +425,7 @@ The full stack includes:
 - Public Container Apps API with private access to backend resources.
 - Container Apps transcription worker job.
 - Retention cleanup job.
-- Private Storage account, Blob container, queues, and tables.
+- Private Storage account, separate audio/transcript Blob containers, queues, and tables.
 - Azure Container Registry.
 - Managed identity and role assignments.
 - Web PubSub for completion events.
@@ -798,6 +798,50 @@ curl --silent "$API_URL/openapi.json" \
 If the result is `null`, deploy the latest backend image and wait for Container
 Apps traffic to move to the new revision.
 
+### Long recordings fail while saving, or recovery is needed
+
+Older backends store the full transcript in a Table Storage string property,
+which has a fixed 64 KiB UTF-16 limit. The blob-backed backend removes that
+transcript-size restriction without changing the client API. Audio upload size,
+recording duration and model/request timeout limits are unchanged.
+
+For an existing installation, apply the updated Terraform configuration to create
+the private `transcripts` container and its separate retention rule before
+deploying the new backend. Update the API, worker and cleanup job to the same
+blob-aware image, and drain old worker executions before resuming recordings.
+Do not run an old cleanup image against new checkpoint expiry records. Existing
+table-only transcripts are read without migration; an old backend cannot read
+new blob-backed records, so rolling back to it is not supported after new writes.
+Rebuild/install the Mac app separately to enable local audio preservation.
+
+`VOICEPROMPT_TRANSCRIPTS_CONTAINER` defaults to `transcripts`.
+`transcript_ttl_hours` in Terraform defaults to 48 and configures both
+`VOICEPROMPT_TRANSCRIPT_TTL_HOURS` for all backend workloads and the orphan-blob
+lifecycle duration. Keep these aligned if configuring resources manually.
+Storage data-plane tools used for recovery need access to the storage private
+endpoint; do not enable public storage access to work around this.
+
+On the updated Mac app, HTTP/network errors and missing refinement confirmation
+retain the recording at:
+
+```text
+~/Library/Application Support/VoicePrompt/QuickRecordings/<session-id>.m4a
+```
+
+The error includes the exact path. Dismissing it or starting another recording
+does not delete the saved file. Retained failures have no automatic local expiry;
+remove them manually once they are no longer needed. There is not yet an in-app
+retry/import workflow for these files.
+
+Before Luna refinement, the backend saves raw text in a private checkpoint blob
+under `transcripts/checkpoints/<owner-hash>/<session-id>/`. These JSON files contain
+the raw Markdown and expiry time; authorized operators can retrieve them through
+the existing private storage access path while the checkpoint is retained.
+They are not automatically published in history. If the final table write fails,
+the completed Markdown may also exist under `transcripts/completed/`; blob
+metadata identifies the session and transcript. None of these protections can
+restore recordings already discarded by older app/backend versions.
+
 ### Custom Luna instructions are ignored
 
 - Confirm the HUD **Refine** switch is enabled.
@@ -846,8 +890,16 @@ az containerapp logs show \
 - iOS audio segments are stored temporarily in the private Blob container.
 - Mac quick-transcription audio is sent directly to the API and is not placed in
   Blob Storage.
-- Completed transcripts are stored in the private `transcripts` table.
+- Completed transcript content is stored in the private `transcripts` Blob
+  container; the `transcripts` table holds metadata and blob references. Legacy
+  table-only transcripts remain readable until deleted or expired.
+- Mac raw-text recovery checkpoints use the same transcript container and
+  retention period, and are removed after successful final persistence.
+- Failed Mac audio stays locally in Application Support until manually removed.
 - Transcripts expire after 48 hours by default.
+- Hourly cleanup deletes expired transcript metadata and content together.
+  A separate Blob lifecycle rule cleans up orphaned content asynchronously.
+  Blob soft-delete protection retains deleted blobs for one additional day.
 - Storage public access is disabled.
 - Runtime services use managed identity; Apple apps never receive Azure service
   credentials.
